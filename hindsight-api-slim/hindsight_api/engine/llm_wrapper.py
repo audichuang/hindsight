@@ -111,6 +111,7 @@ _MENTAL_MODEL_REFRESH_SCOPES = (
     "refresh_mental_model",
     "dry_run_refresh_mental_model",
     "mental_model_delta_ops",
+    "mental_model_retraction_ops",
 )
 
 
@@ -121,10 +122,18 @@ def _scope_to_operation(scope: str) -> str | None:
     (verification probes, bank_mission, memory_think), which then run under the
     global cap only.
     """
+    from .llm_trace import current_trace_context
+
     # The background mental-model refresh, its dry run and its delta ops form one
     # bucket, separate from interactive reflect: capping it is how an operator stops
     # the background job from starving the interactive path (issue #4463).
-    if scope.startswith(_MENTAL_MODEL_REFRESH_SCOPES):
+    # The refresh drives the reflect agent, whose calls carry ordinary reflect
+    # scopes; the operation bound by ``with_config`` is what identifies them.
+    trace = current_trace_context()
+    operation = trace.operation if trace is not None else None
+    if scope.startswith(_MENTAL_MODEL_REFRESH_SCOPES) or (
+        operation is not None and operation.startswith(_MENTAL_MODEL_REFRESH_SCOPES)
+    ):
         return "mental_model_refresh"
     if scope.startswith("retain"):
         return "retain"
