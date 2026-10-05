@@ -2191,8 +2191,11 @@ class OpenAICompatibleLLM(LLMInterface):
             return config.llm_openai_compatible_json_mode
         if self.provider == "llamacpp":
             return not config.llamacpp_no_grammar
-        # These don't honour json_object reliably.
-        return self.provider not in ("lmstudio", "ollama", "volcano")
+        # These don't honour json_object reliably. z.ai's json_object mode deletes the
+        # literal token "json" from generated text ("--json" -> "--", "latest.json" ->
+        # "latest."), corrupting every stored fact that names a flag or file; the schema
+        # in the prompt is enough for GLM.
+        return self.provider not in ("lmstudio", "ollama", "volcano", "zai")
 
     def supports_vision(self) -> bool | None:
         """Known only for OpenAI itself; unknown for every other backend here.
