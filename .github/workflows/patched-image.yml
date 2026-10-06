@@ -1,0 +1,97 @@
+# Builds the patched standalone image (API on 8888 + control plane on 9999) from
+# this branch and pushes it to ghcr.io/<owner>/hindsight:<tag>.
+#
+# It builds the same target as upstream's release.yml for ghcr.io/vectorize-io/hindsight
+# (docker/standalone/Dockerfile, target "standalone", default build args, so local ML
+# models are included and preloaded), but for linux/amd64 only and with no "latest" tag.
+#
+# Release: push a lightweight tag like v0.10.2-patch.1 on the patched branch.
+name: Build patched image
+
+on:
+  push:
+    tags:
+      - 'v*-patch.*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: patched-image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/hindsight
+  # Base images pinned to the interpreter / runtime versions found in the upstream
+  # 0.10.2 image, so a rebuild does not silently move Python or Node. The Dockerfile
+  # itself is unchanged; these override its FROM lines through build contexts.
+  PYTHON_BASE: python:3.11.16-slim
+  NODE_BASE: node:24.21.0-slim
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
+          tags: |
+            type=ref,event=tag
+            type=sha,format=long,enable=${{ github.event_name == 'workflow_dispatch' }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/standalone/Dockerfile
+          target: standalone
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          build-contexts: |
+            python:3.11-slim=docker-image://${{ env.PYTHON_BASE }}
+            node:24-slim=docker-image://${{ env.NODE_BASE }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Summary
+        run: |
+          {
+            echo "### Pushed"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo "digest: ${{ steps.build.outputs.digest }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
