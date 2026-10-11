@@ -106,7 +106,8 @@ def _build_per_op_semaphores() -> dict[str, CrossLoopSemaphore]:
 _per_op_llm_semaphores: dict[str, CrossLoopSemaphore] = _build_per_op_semaphores()
 
 # Call scopes the automatic mental-model refresh makes: the reflect pass itself, its
-# dry run, and the structured delta/retraction ops that follow it.
+# dry run, and the structured delta/retraction ops that follow it. Matched as a
+# prefix against both the call scope and the operation bound by ``with_config``.
 _MENTAL_MODEL_REFRESH_SCOPES = (
     "refresh_mental_model",
     "dry_run_refresh_mental_model",
@@ -131,9 +132,7 @@ def _scope_to_operation(scope: str) -> str | None:
     # scopes; the operation bound by ``with_config`` is what identifies them.
     trace = current_trace_context()
     operation = trace.operation if trace is not None else None
-    if scope.startswith(_MENTAL_MODEL_REFRESH_SCOPES) or (
-        operation is not None and operation.startswith(_MENTAL_MODEL_REFRESH_SCOPES)
-    ):
+    if any(label.startswith(_MENTAL_MODEL_REFRESH_SCOPES) for label in (scope, operation) if label):
         return "mental_model_refresh"
     if scope.startswith("retain"):
         return "retain"
