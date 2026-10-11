@@ -23,7 +23,6 @@ reads the same retain-scoped field rather than the global flag, keeping the batc
 and streaming paths in agreement.
 """
 
-from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 import dataclasses
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -32,15 +31,16 @@ import pytest
 from pydantic import BaseModel
 
 from hindsight_api.config import (
+    ENV_LLM_OPENAI_COMPATIBLE_JSON_MODE,
     ENV_LLM_STRICT_SCHEMA,
     ENV_LLM_STRICT_SCHEMA_CONSOLIDATION,
     ENV_LLM_STRICT_SCHEMA_REFLECT,
     ENV_LLM_STRICT_SCHEMA_RETAIN,
-    ENV_LLM_OPENAI_COMPATIBLE_JSON_MODE,
     HindsightConfig,
 )
 from hindsight_api.engine.llm_wrapper import LLMProvider
 from hindsight_api.engine.providers.openai_compatible_llm import OpenAICompatibleLLM
+from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 
 
 class _Resp(BaseModel):
@@ -234,6 +234,8 @@ async def test_openai_soft_uses_json_object():
         ("lmstudio", None, False),
         ("openai", False, False),  # local server behind provider=openai (#4935)
         ("lmstudio", True, True),
+        ("zai", None, False),  # z.ai's json_object mode deletes the word "json" (#5175)
+        ("zai", True, True),  # an explicit override still wins
     ],
 )
 @pytest.mark.asyncio
