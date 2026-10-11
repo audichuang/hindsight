@@ -235,6 +235,7 @@ async def test_openai_soft_uses_json_object():
         ("openai", False, False),  # local server behind provider=openai (#4935)
         ("lmstudio", True, True),
         ("zai", None, False),  # json_object mode deletes the token "json" from the text (#5175)
+        ("zai", True, True),  # an explicit override still wins
     ],
 )
 @pytest.mark.asyncio
