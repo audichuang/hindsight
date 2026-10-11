@@ -16,7 +16,7 @@ import httpx
 import pytest
 from openai import APIConnectionError
 
-from hindsight_api.config import _get_raw_config, clear_config_cache
+from hindsight_api.config import _get_raw_config
 from hindsight_api.engine import llm_wrapper
 from hindsight_api.engine.llm_trace import LLMTraceContext, reset_trace_context, set_trace_context
 from hindsight_api.engine.llm_wrapper import (
@@ -94,7 +94,6 @@ class TestScopeToOperationUnderRefresh:
         finally:
             reset_trace_context(token)
 
-
     @pytest.mark.asyncio
     async def test_attempt_gated_refresh_attempt_holds_the_refresh_permit(self):
         """Attempt-gated providers (openai-compatible, xai-oauth, codex, ...) take
@@ -120,6 +119,7 @@ class TestScopeToOperationUnderRefresh:
             await configured.call(messages=[{"role": "user", "content": "x"}], scope="reflect")
 
         assert held == [(True, False)], "a refresh attempt must hold the refresh permit, not reflect's"
+
 
 class TestSemaphoresForScope:
     """`_semaphores_for_scope` always returns the global semaphore, plus the
