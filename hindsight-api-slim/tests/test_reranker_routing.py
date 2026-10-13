@@ -1225,7 +1225,7 @@ def test_warning_member_cap_on_rrf_passthrough():
     assert "HINDSIGHT_API_RERANKER_3_BACKGROUND_MAX_CANDIDATES" in warnings[1]
 
 
-def test_no_warnings_for_the_ttnas_example():
+def test_no_warnings_for_the_reference_example():
     warnings = _warnings(
         {
             ENV_FOREGROUND_ORDER: "0,1,2,3",
