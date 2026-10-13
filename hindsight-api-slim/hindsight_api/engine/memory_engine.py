@@ -1712,6 +1712,10 @@ def _resolve_thinking_budget(config_dict: dict, budget: "Budget | None", max_tok
     return int(fixed[effective_budget])
 
 
+from .reranker_routing import lane_max_candidates_override, rerank_background_lane  # fork: rerank-routing
+
+
+@lane_max_candidates_override  # fork: rerank-routing
 def _resolve_reranker_max_candidates(config: ConfigLike, budget: "Budget | None") -> int:
     """Map a Budget level to the cross-encoder candidate cap.
 
@@ -4987,6 +4991,7 @@ class MemoryEngine(MemoryEngineInterface):
 
         logger.info(f"[REFRESH_MENTAL_MODEL_TASK] Completed for bank_id={bank_id}, mental_model_id={mental_model_id}")
 
+    @rerank_background_lane  # fork: rerank-routing
     @_bind_bank_id("task_dict", key="bank_id")
     async def execute_task(self, task_dict: dict[str, Any]) -> None:
         """

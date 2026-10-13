@@ -5988,3 +5988,9 @@ def clear_config_cache() -> None:
     """Clear the config cache. Useful for testing or reloading config."""
     global _config_cache
     _config_cache = None
+
+
+# fork: rerank-routing
+def reranker_routing_env() -> dict[str, str]:
+    """Raw HINDSIGHT_API_RERANKER_* values for the fork's lane routing; parsed and validated in engine/reranker_routing.py."""
+    return {k: v for k, v in os.environ.items() if k.startswith("HINDSIGHT_API_RERANKER_")}

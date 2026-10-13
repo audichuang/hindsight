@@ -2975,6 +2975,11 @@ def create_cross_encoder_from_env() -> CrossEncoderModel:
     from ..config import get_config
 
     chain = get_config().reranker_chain()
+    from .reranker_routing import validate_routing_env  # fork: rerank-routing
+
+    validate_routing_env(len(chain))  # fork: rerank-routing
     if len(chain) == 1:
         return create_cross_encoder(chain[0])
-    return MultiCrossEncoder([create_cross_encoder(member) for member in chain])
+    from .reranker_routing import routed_chain  # fork: rerank-routing
+
+    return routed_chain([create_cross_encoder(member) for member in chain])  # fork: rerank-routing
