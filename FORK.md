@@ -25,3 +25,5 @@ Each feature patch has its own `FORK-<NAME>.md` at the repo root: what it does, 
 ## Rebasing onto a new upstream tag
 
 Cherry-pick the fork commits onto the new tag in a clean worktree. For a conflict, take upstream's side of the hunk and re-insert the marked hook lines at the same anchors. Then read each `FORK-<NAME>.md` "Maintaining the patch" section: it lists the upstream behaviour the patch depends on and must be re-diffed.
+
+Then test the rebased tree as a whole, not only the patch: the api-slim suite as CI's `test-api` job runs it (`uv sync --frozen --all-extras --index-strategy unsafe-best-match`, then `uv run pytest tests -m "not hs_llm_mat and not hs_llm_core"`), and `hindsight-system-tests`. Some tests fail on a laptop for environment reasons (no provider credentials, missing services), so rerun every failure on the bare upstream tag: only a failure the bare tag does not have belongs to the patch. On macOS add `--no-extra local-llm` (llama-cpp-python does not build); a plain `uv sync` leaves out pg0 and every database test errors. Keep the worktree free of a `.env`: a deployment's reranker settings leak into the routing tests' single-member cases.
