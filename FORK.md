@@ -21,6 +21,7 @@ Each feature patch has its own `FORK-<NAME>.md` at the repo root: what it does, 
 1. Run the patch's tests, the upstream tests around the hooked code, `ruff check`, `ruff format --check` and `ty check` on the fork module.
 2. Prove the patch applies to current upstream: in a throwaway detached worktree of `origin/main`, `git apply --3way --check` the full diff, then remove the worktree.
 3. Have the change reviewed (a second model or Codex). Reject review fixes that would add hooks to hot upstream paths; record the trade-off in the patch's `FORK-<NAME>.md` instead.
+   A pure rebase skips this step when every cherry-pick applied without conflicts, each patch's diff is identical to the one last reviewed, and the upstream files each `FORK-<NAME>.md` names as dependencies are unchanged between the two tags. A resolved conflict or a changed dependency needs a review.
 
 ## Rebasing onto a new upstream tag
 
