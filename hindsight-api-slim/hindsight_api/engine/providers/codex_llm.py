@@ -21,7 +21,6 @@ import json
 import logging
 import re
 import time
-import uuid
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
 from datetime import UTC, datetime
@@ -32,6 +31,7 @@ import aiohttp
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError
 
 from hindsight_api.engine.aiohttp_session import LoopLocalSession, UpstreamHTTPError, raise_for_status
+from hindsight_api.engine.cache_affinity import cache_affinity_id
 from hindsight_api.engine.llm_interface import (
     LLM_TOOL_CHOICE_AUTO,
     LLMInterface,
@@ -687,8 +687,15 @@ class CodexLLM(LLMInterface):
             "store": False,  # Codex uses stateless mode
             "stream": True,  # SSE streaming
             "include": ["reasoning.encrypted_content"],
-            "prompt_cache_key": str(uuid.uuid4()),
         }
+        # One key per operation (its trace_id; the first message when untraced), so
+        # every call of one retain/reflect/consolidation run reaches the same backend
+        # prompt cache. A fresh uuid4 per request made every call cache-cold. When no
+        # id can be derived the field is left out: a random key is no better than none.
+        # extra_body is merged after, so an operator's own prompt_cache_key wins.
+        prompt_cache_key = cache_affinity_id(messages)
+        if prompt_cache_key is not None:
+            payload["prompt_cache_key"] = prompt_cache_key
         payload.update(self._extra_body)
 
         if use_forced_tool and schema is not None:
@@ -1165,8 +1172,15 @@ class CodexLLM(LLMInterface):
             "store": False,
             "stream": True,
             "include": ["reasoning.encrypted_content"],
-            "prompt_cache_key": str(uuid.uuid4()),
         }
+        # One key per operation (its trace_id; the first message when untraced), so
+        # every call of one retain/reflect/consolidation run reaches the same backend
+        # prompt cache. A fresh uuid4 per request made every call cache-cold. When no
+        # id can be derived the field is left out: a random key is no better than none.
+        # extra_body is merged after, so an operator's own prompt_cache_key wins.
+        prompt_cache_key = cache_affinity_id(messages)
+        if prompt_cache_key is not None:
+            payload["prompt_cache_key"] = prompt_cache_key
         payload.update(self._extra_body)
 
         headers = self._build_request_headers()
