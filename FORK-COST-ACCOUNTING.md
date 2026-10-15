@@ -113,6 +113,71 @@ Layering: `api/llm_cost_routes.py` only parses parameters and maps errors. `engi
 
 The control-plane proxies are `hindsight-control-plane/src/app/api/banks/[bankId]/llm-requests/cost/route.ts` and `.../cost/rows/route.ts`. Both delegate to `src/lib/fork/llm-cost-proxy.ts`, which uses cost-specific English messages (`Failed to get LLM cost data`). A 404 from the proxy still hides the panel without logging, as a fallback for a flag/API mismatch. With the flag off, the panel is not mounted and no request is made.
 
+## Subscription quota
+
+A read-only snapshot of the plan limits behind the server's LLM lanes: for each rolling window, the used percentage and the reset time, plus the Codex credit balance or the Claude extra-usage budget where the provider exposes one. Plan rows are not billed per token, so the cost panel cannot show how close a plan is to its limit; this section does. The payload describes the server, not a bank.
+
+It is off by default and independent of `HINDSIGHT_API_LLM_COST_ENABLED`. The control plane shows the card inside the cost panel, so it needs the cost switch on as well (see "Control-plane gating").
+
+Environment variables (validated in `engine/llm_quota.py`, read through `llm_cost_env()`):
+
+- `HINDSIGHT_API_LLM_COST_QUOTA_ENABLED`: `true/false/1/0/yes/no` (case-insensitive), default `false`. Any other value stops startup and the error names the variable.
+- `HINDSIGHT_API_LLM_COST_QUOTA_CLAUDE_OAUTH_TOKEN`: optional OAuth access token with the `user:profile` scope, used for the Claude usage endpoint. It is held as a secret and is never printed, logged or returned. An unknown `HINDSIGHT_API_LLM_COST_QUOTA_*` key stops startup; the error names the key only.
+
+The cost settings skip the `HINDSIGHT_API_LLM_COST_QUOTA_` prefix (`llm_cost.py`), so the two features do not validate each other's keys.
+
+### Endpoint
+
+`GET /v1/default/banks/{bank_id}/llm-requests/quota` (not in OpenAPI, `include_in_schema=False`). It is registered by `register_llm_cost_routes` when the quota flag is on, and it works with the cost flag off. Auth is the same as the cost routes: an unknown bank is 404, and a tag-scoped caller is refused with 403.
+
+The response is server-wide: `scope` is `"server"`, and every bank gets the same provider list. The bank id is only used for the readability check and echoed back.
+
+```
+{ "bank_id", "scope": "server",
+  "providers": [ { "provider", "lanes", "status", "reason", "detail", "plan",
+                   "windows": [ {"label", "used_percent", "resets_at", "window_seconds", "scope"} ],
+                   "credits", "budget", "fetched_at", "stale" } ] }
+```
+
+- `status`: `ok`, `unsupported` (no usage source for this provider), `unavailable` (a credential is missing or lacks scope; no request was made, or the provider refused the scope), or `error` (the request or the response failed).
+- `reason`: `no_credentials`, `token_scope`, `auth_failed`, `http_error` (`detail` is `HTTP <code>`), `malformed_response`, `timeout`, `provider_error` (`detail` is the fixed phrase `provider reported an error`; the Z.ai `msg` is never returned, because an error envelope can echo the configured key), `not_a_plan_endpoint`, `no_usage_endpoint`, `internal_error`. `reason` is null on `ok`.
+- `credits` (Codex) is shown only when the account reports `has_credits: true`, as Hermes does: a balance, and `unlimited` only with credits. A plan account without credits reports `has_credits: false` with a `"0"` balance, which is not shown. `banked_resets` is shown whenever it is positive.
+- `used_percent` is clamped to 0 to 100. `budget` values are converted from minor units (cents) to major units.
+
+### Lanes queried
+
+Only the lanes this server's engine is configured with: the default `_llm_config`, `_retain_llm_config`, `_reflect_llm_config`, `_consolidation_llm_config` and `_mental_model_refresh_llm_override`. Labels are `default`, `retain`, `reflect`, `consolidation` and `mental_model_refresh`. Chain members get a 1-based index, such as `retain[2]`. Targets are deduplicated by credential (the internal key is never returned), and one target lists every lane that uses it. Per-bank and per-operation overrides are not walked.
+
+### Credential source per provider
+
+- `openai-codex`: the Codex login the lane already holds (`$CODEX_HOME/auth.json`, default `~/.codex/auth.json`). The quota path calls the same proactive refresh every Codex call makes, and never forces one. A refresh that has expired gives `auth_failed`. Without a usable login the lane does not start, so there is nothing to query.
+- `claude-code`: the quota token variable if set, else the lane's API key when it starts with `sk-ant-oat`. With neither, the status is `unavailable`, reason `no_credentials`, and no request is sent. The CLI's own `claude auth login` store is not read. A setup token is inference-only, so the usage endpoint answers 403 and the status is `unavailable`, reason `token_scope`.
+- `zai`: the lane's API key, but only when the lane's base URL path contains `/coding/`. On a pay-per-token endpoint the status is `unsupported`, reason `not_a_plan_endpoint`, and no request is sent.
+- `xai-oauth`, `github-copilot`, `cursor`, `nous`: `unsupported`, reason `no_usage_endpoint`, no request.
+- Every other provider (metered API keys, local models) is not listed. Their spend is in the cost panel.
+
+### Requests (URLs and header names; no values)
+
+- Codex: `{base}/wham/usage` when the base URL contains `/backend-api`, else `{base}/api/codex/usage`, where `base` is the lane's base URL without a trailing `/codex`. Headers: `Authorization`, `ChatGPT-Account-ID`, `User-Agent`, `Origin`, `originator` (the lane's own headers, without `Content-Type`), and `Accept`.
+- Claude: `https://api.anthropic.com/api/oauth/usage`. Headers: `Authorization`, `Accept`, `anthropic-version`, `anthropic-beta`.
+- Z.ai: `{scheme}://{host}/api/monitor/usage/quota/limit` (the lane's origin only). Headers: `Authorization`, `Accept`.
+
+Each request has a 10 s total timeout. Targets are fetched concurrently. HTTP 401 gives `auth_failed`. A 403 whose body mentions `user:profile` gives `unavailable`, reason `token_scope`; any other 403 gives `auth_failed`. A non-2xx status gives `error`, reason `http_error`. A timeout gives `timeout`. A body that is not JSON gives `malformed_response`. Nothing raises into the request. Logs carry the provider and the HTTP status only, never headers, tokens or bodies.
+
+### Cache and backoff
+
+The cache is in-process, one entry per credential, and it lives for the server's lifetime. A success is valid for 60 s. A failure backs off for 60 s, doubling with each consecutive failure up to 900 s. While backing off, the last good reading is returned with `stale: true`; with none, the error is returned. Each credential has its own lock, so concurrent page loads share one fetch.
+
+### Control-plane gating
+
+The card (`LLMQuotaCard`) is mounted by the cost panel and shows only when `features.llm_cost` is true, which comes from `HINDSIGHT_CP_LLM_COST_ENABLED`. The control plane's proxy is `.../llm-requests/quota/route.ts`, and it calls `src/lib/fork/llm-cost-proxy.ts`.
+
+Trade-off: with the cost switch on and the quota switch off, each page view sends one quota request that the API answers with 404. The card then hides itself without logging, and the cost card is unaffected. The alternative is a new field in the API's `features` object, which would change the generated clients.
+
+### Not read, and why
+
+- `RateLimitEvent`: the Claude Agent SDK sends rate-limit messages during `claude-code` calls. They could feed the same windows passively, without a request. This is a possible future source and is not built.
+
 ## Known limitations
 
 - Error rows (provider charged, local parsing failed) get the total input, because the Anthropic provider stashes its usage (`stash_response_usage(_usage_from_anthropic_response(response))`, `anthropic_llm.py` in `call()` and `call_with_tools()`) before it parses or validates the output, and the wrapper writes that stash on the error row. They have no cache-write split, so their write portion is priced at the base input rate. A provider that never stashes writes error rows with NULL tokens (`no_usage`).
@@ -156,6 +221,7 @@ Files owned by the fork (new logic, no upstream edits):
 - `hindsight-control-plane/src/app/api/banks/[bankId]/llm-requests/cost/route.ts`, `.../cost/rows/route.ts`
 - `hindsight-control-plane/src/lib/fork/llm-cost.ts`, `hindsight-control-plane/src/lib/fork/llm-cost-proxy.ts`, `hindsight-control-plane/src/components/fork/llm-cost-panel.tsx`
 - `hindsight-control-plane/tests/components/llm-cost.test.ts`, `llm-cost-proxy.test.ts`
+- Subscription quota: `hindsight-api-slim/hindsight_api/engine/llm_quota.py`; `hindsight-api-slim/tests/test_llm_quota.py`, `test_llm_quota_routes.py`, `test_llm_quota_live.py` (real Codex fetch, gated by `HINDSIGHT_QUOTA_LIVE=1`); `hindsight-control-plane/src/app/api/banks/[bankId]/llm-requests/quota/route.ts`; `hindsight-control-plane/src/lib/fork/llm-quota.ts`; `hindsight-control-plane/src/components/fork/llm-quota-card.tsx`; `hindsight-control-plane/tests/components/llm-quota.test.ts`
 - `FORK-COST-ACCOUNTING.md`
 
 Upstream hooks. Each one is marked `fork: cost-accounting`:
@@ -186,13 +252,14 @@ Upstream hooks. Each one is marked `fork: cost-accounting`:
 | H22 | `hindsight-api-slim/hindsight_api/engine/providers/xai_oauth_llm.py` | `cost_in_usd_ticks: object = None` on `_ChatUsage` (marked; deliberately untyped, so a wrong-typed value never fails the completion parse, and `xai_oauth_usage_kwargs` filters it); `_record_span` gains a `fork_usage` parameter (marked) and forwards `**(fork_usage or {})`; both `self._record_span(` call sites pass `fork_usage=xai_oauth_usage_kwargs(...)` with a local import above |
 | H23 | `hindsight-api-slim/hindsight_api/worker/main.py`, `main()` | a local import of `load_cost_settings` and `load_cost_settings()` right after `load_dotenv_for_entrypoint()` (both marked): the worker validates `HINDSIGHT_API_LLM_COST_*` at startup, as the API does |
 
-The fork-owned modules `engine/llm_cost.py`, `src/components/fork/llm-cost-panel.tsx` and `src/lib/fork/llm-cost.ts` also carry a `fork: cost-accounting` header comment. The other fork files (`llm_cost_store.py`, `llm_cost_routes.py`) are fork files by path and have no marker. So `grep -rn "fork: cost-accounting" hindsight-api-slim/hindsight_api hindsight-api-slim/pyproject.toml hindsight-control-plane/src` returns every hook line in the table above, plus the header comment of the fork-owned modules (`llm_cost.py`, `llm-cost.ts`, `llm-cost-panel.tsx`) and the cost route files. Any hook line from the table that is missing from that output has been lost. The hook-existence tests in `tests/test_llm_cost.py` and `tests/test_llm_cost_hooks.py` fail if a hook is lost (H7 is checked in `tests/test_llm_cost_hooks.py`); `tests/test_llm_cost_routes.py` checks the H6 block.
+The fork-owned modules `engine/llm_cost.py`, `src/components/fork/llm-cost-panel.tsx` and `src/lib/fork/llm-cost.ts` also carry a `fork: cost-accounting` header comment. The other fork files (`llm_cost_store.py`, `llm_cost_routes.py`) are fork files by path and have no marker. So `grep -rn "fork: cost-accounting" hindsight-api-slim/hindsight_api hindsight-api-slim/pyproject.toml hindsight-control-plane/src` returns every hook line in the table above, plus the header comment of the fork-owned modules (`llm_cost.py`, `llm-cost.ts`, `llm-cost-panel.tsx`) and the cost route files. Files of the subscription quota feature also carry the marker in their headers; they are not hook lines and are not in the table. Any hook line from the table that is missing from that output has been lost. The hook-existence tests in `tests/test_llm_cost.py` and `tests/test_llm_cost_hooks.py` fail if a hook is lost (H7 is checked in `tests/test_llm_cost_hooks.py`); `tests/test_llm_cost_routes.py` checks the H6 block.
 
 After each rebase, diff `anthropic_llm.py`, `codex_llm.py`, `claude_code_llm.py`, `openai_compatible_llm.py`, `openai_responses_llm.py`, `xai_oauth_llm.py` and `memory_engine.py` (the reflect usage conversion) against the previous tag. If upstream fixed any of the bugs, drop that fix commit and keep the hooks. Re-anchor H4, H5 and H14-H22 on upstream's span record calls if they moved; the hook tests count the occurrences. Re-diff `LLMTraceRecorder.record_llm_call` and the `llm_requests` columns as well.
 
 Upstream behaviour this patch depends on, to re-diff after each rebase (private names, so upstream can rename them without notice):
 
 - `llm_cost_routes.py`: `get_request_context` (the closure H6 passes in), `load_cost_settings`, `app.state.memory`, and `http.py`'s `_parse_iso_datetime` and `_internal_error`. `OperationValidationError` is the 403 path.
+- `llm_quota.py`: `MemoryEngine._llm_config`, `_retain_llm_config`, `_reflect_llm_config`, `_consolidation_llm_config` and `_mental_model_refresh_llm_override` (the lanes queried); `MultiLLMProvider.members`; `LLMProvider.provider`, `api_key`, `base_url` and `_provider_impl`; `CodexLLM._ensure_fresh_token`, `_build_request_headers`, `_auth_file` and `base_url`; `CodexRefreshExpiredError` (`providers/codex_auth.py`); the Claude Code lane's `api_key`. Provider response shapes (Codex `/wham/usage`, Claude `/api/oauth/usage`, Z.ai quota) are not upstream names, but they are parsed by `llm_quota.py`'s models and need the same re-check when a provider changes them.
 - `llm_cost_store.py`: `MemoryEngine._get_backend`, `MemoryEngine.get_bank_profile`, `MemoryEngine._refuse_bank_wide_if_scoped` (tag-scope refusal, same as `llm-requests/stats`), `acquire_with_retry` (`engine/db_utils.py`), `conn.parse_json` and `conn.fetch` on the pooled connection, `fq_table` and `_is_oracle` (`engine/schema.py`), and `ResultRow` (`engine/db`).
 - `llm_requests` columns and `llm_info` JSONB (`engine/llm_trace.py`, `LLMTraceRecorder.record_llm_call` and its `**_extra` parameter).
 - Provider usage shapes and the span-recorder call sites (the cost adapters depend on them):

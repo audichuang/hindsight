@@ -6,9 +6,10 @@ vi.mock("@/lib/hindsight-client", () => ({
   getDataplaneHeaders: () => ({}),
 }));
 
-import { COST_LOAD_ERROR, proxyLLMCost } from "@/lib/fork/llm-cost-proxy";
+import { COST_LOAD_ERROR, QUOTA_LOAD_ERROR, proxyLLMCost } from "@/lib/fork/llm-cost-proxy";
 import { GET as costGET } from "@/app/api/banks/[bankId]/llm-requests/cost/route";
 import { GET as rowsGET } from "@/app/api/banks/[bankId]/llm-requests/cost/rows/route";
+import { GET as quotaGET } from "@/app/api/banks/[bankId]/llm-requests/quota/route";
 
 function stubFetch(status: number, body: unknown) {
   const spy = vi.fn(
@@ -68,6 +69,31 @@ describe("cost proxy messages", () => {
     expect(await response.json()).toEqual({ error: COST_LOAD_ERROR });
   });
 
+  it("uses the quota message, not the cost one, when the quota endpoint fails without detail", async () => {
+    stubFetch(500, {});
+    const response = await proxyLLMCost(req("/x"), "bank-a", "/llm-requests/quota");
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: QUOTA_LOAD_ERROR });
+    expect(QUOTA_LOAD_ERROR).not.toEqual(COST_LOAD_ERROR);
+  });
+
+  it("maps a quota network failure to a 500 with the quota message", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Promise.reject(new Error("ECONNREFUSED")))
+    );
+    const response = await proxyLLMCost(req("/x"), "bank-a", "/llm-requests/quota");
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: QUOTA_LOAD_ERROR });
+  });
+
+  it("keeps the quota 404 so the card can hide itself", async () => {
+    stubFetch(404, { detail: "Not Found" });
+    const response = await proxyLLMCost(req("/x"), "bank-a", "/llm-requests/quota");
+    expect(response.status).toBe(404);
+  });
+
   it("rejects a missing bank id before any request", async () => {
     const spy = stubFetch(200, {});
     const response = await proxyLLMCost(req("/x"), undefined, "/llm-requests/cost");
@@ -89,6 +115,17 @@ describe("cost routes", () => {
     const url = String(spy.mock.calls[0][0]);
     expect(url).toContain("/llm-requests/cost?period=7d&operation=retain");
     expect(url).not.toContain("/llm-requests/cost/rows");
+  });
+
+  it("forward the quota request to the quota endpoint only", async () => {
+    const spy = stubFetch(200, { bank_id: "bank-a", scope: "server", providers: [] });
+    const response = await quotaGET(req("/api/banks/bank-a/llm-requests/quota"), {
+      params: Promise.resolve({ bankId: "bank-a" }),
+    });
+    expect(response.status).toBe(200);
+    const url = String(spy.mock.calls[0][0]);
+    expect(url).toContain("/llm-requests/quota");
+    expect(url).not.toContain("/llm-requests/cost");
   });
 
   it("forward the ids to the rows endpoint", async () => {
