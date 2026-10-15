@@ -494,6 +494,27 @@ def _content_or_error(response: Any, *, provider: str, model: str, scope: str) -
     return content, choice
 
 
+def _cached_prompt_tokens(usage: Any) -> int:
+    """Cache-read count from an OpenAI-shaped usage block.
+
+    The standard ``prompt_tokens_details.cached_tokens`` wins when positive. Otherwise
+    the first positive real int among the provider-specific fields wins: DeepSeek's
+    ``prompt_cache_hit_tokens``, ``cache_read_input_tokens``, then Kimi's top-level
+    ``cached_tokens``. Only real ints count for the fallbacks, so attribute-mocked
+    usage objects keep the standard reading.
+    """
+    details_cached = 0
+    if usage and getattr(usage, "prompt_tokens_details", None):
+        details_cached = getattr(usage.prompt_tokens_details, "cached_tokens", 0) or 0
+    if isinstance(details_cached, int) and not isinstance(details_cached, bool) and details_cached > 0:
+        return details_cached
+    for field in ("prompt_cache_hit_tokens", "cache_read_input_tokens", "cached_tokens"):
+        value = getattr(usage, field, None) if usage else None
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return details_cached
+
+
 def _usage_from_openai_response(response: Any) -> LLMResponseUsage:
     """Extract input / visible-output / cached / reasoning counts from an OpenAI-shaped usage block."""
     usage = visible_token_usage(response)
@@ -537,9 +558,7 @@ def visible_token_usage(response: Any) -> TokenUsage:
     input_tokens = (getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
     completion_tokens = (getattr(usage, "completion_tokens", 0) or 0) if usage else 0
     reported_total = (getattr(usage, "total_tokens", 0) or 0) if usage else 0
-    cached_tokens = 0
-    if usage and getattr(usage, "prompt_tokens_details", None):
-        cached_tokens = getattr(usage.prompt_tokens_details, "cached_tokens", 0) or 0
+    cached_tokens = _cached_prompt_tokens(usage)
     thoughts_tokens = 0
     if usage and getattr(usage, "completion_tokens_details", None):
         thoughts_tokens = getattr(usage.completion_tokens_details, "reasoning_tokens", 0) or 0
