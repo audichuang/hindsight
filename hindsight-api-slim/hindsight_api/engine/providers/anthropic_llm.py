@@ -36,15 +36,28 @@ from ..response_models import LLMCallResult
 logger = logging.getLogger(__name__)
 
 
+def _int(v: Any) -> int:
+    """Return v when it is a real int (not bool), else 0."""
+    return v if isinstance(v, int) and not isinstance(v, bool) else 0
+
+
 def _usage_from_anthropic_response(response: Any) -> LLMResponseUsage:
-    """Extract input/output/cached token counts from an Anthropic usage block."""
+    """Extract input/output/cached token counts from an Anthropic usage block.
+
+    Anthropic reports ``input_tokens`` as the uncached remainder only; cache writes
+    and cache reads are separate fields. ``input_tokens`` here is the total prompt
+    (uncached + cache write + cache read), per the TokenUsage contract, and
+    ``cached_tokens`` is the cache-read subset of it.
+    """
     usage = getattr(response, "usage", None)
     if not usage:
         return LLMResponseUsage()
+    cache_read = _int(getattr(usage, "cache_read_input_tokens", None))
+    cache_write = _int(getattr(usage, "cache_creation_input_tokens", None))
     return LLMResponseUsage(
-        input_tokens=usage.input_tokens or 0,
-        output_tokens=usage.output_tokens or 0,
-        cached_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
+        input_tokens=_int(usage.input_tokens) + cache_write + cache_read,
+        output_tokens=_int(usage.output_tokens),
+        cached_tokens=cache_read,
     )
 
 
@@ -431,6 +444,7 @@ class AnthropicLLM(LLMInterface):
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     success=True,
+                    cached_input_tokens=cached_tokens,
                 )
 
                 # Record trace span
@@ -668,8 +682,10 @@ class AnthropicLLM(LLMInterface):
                 finish_reason = "tool_calls" if tool_calls else "stop"
 
                 # Extract token usage
-                input_tokens = response.usage.input_tokens or 0
-                output_tokens = response.usage.output_tokens or 0
+                response_usage = _usage_from_anthropic_response(response)
+                input_tokens = response_usage.input_tokens
+                output_tokens = response_usage.output_tokens
+                cached_tokens = response_usage.cached_tokens
 
                 # Record metrics
                 metrics = get_metrics_collector()
@@ -682,6 +698,7 @@ class AnthropicLLM(LLMInterface):
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     success=True,
+                    cached_input_tokens=cached_tokens,
                 )
 
                 # Record OpenTelemetry span
@@ -706,6 +723,7 @@ class AnthropicLLM(LLMInterface):
                     finish_reason=finish_reason,
                     error=None,
                     tool_calls=tool_calls_dict,
+                    cached_tokens=cached_tokens,
                 )
 
                 return LLMToolCallResult(
@@ -714,6 +732,7 @@ class AnthropicLLM(LLMInterface):
                     finish_reason=finish_reason,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
+                    cached_tokens=cached_tokens,
                 )
 
             except (APIConnectionError, APIStatusError, TimeoutError) as e:
@@ -840,9 +859,9 @@ class AnthropicLLM(LLMInterface):
         if tool_input is not None:
             content = json.dumps(tool_input, ensure_ascii=False)
 
-        usage = getattr(message, "usage", None)
-        input_tokens = (usage.input_tokens or 0) if usage else 0
-        output_tokens = (usage.output_tokens or 0) if usage else 0
+        usage = _usage_from_anthropic_response(message)
+        input_tokens = usage.input_tokens
+        output_tokens = usage.output_tokens
 
         return {
             "choices": [
