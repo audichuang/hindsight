@@ -50,6 +50,36 @@ class _SdkUsage(BaseModel):
     cache_creation_input_tokens: int | None = None
 
 
+def _sdk_cache_writes(usage: dict[str, Any], reported: int | None) -> int:  # fork: anthropic-cache-writes
+    """Cache writes of one run: the reported total, or the TTL breakdown when that is larger.
+
+    A missing ``cache_creation_input_tokens`` must not drop the writes the CLI reports only
+    under ``cache_creation.ephemeral_5m/1h_input_tokens`` (they are priced as writes).
+    """
+
+    def _int(v: Any) -> int:
+        return v if isinstance(v, int) and not isinstance(v, bool) else 0
+
+    creation = usage.get("cache_creation")
+    creation = creation if isinstance(creation, dict) else {}
+    ttl_writes = _int(creation.get("ephemeral_5m_input_tokens")) + _int(creation.get("ephemeral_1h_input_tokens"))
+    return max(_int(reported), ttl_writes)
+
+
+def _stash_error_result_usage(message: Any) -> None:  # fork: claude-code-error-usage
+    """Keep the real counts of an ``is_error`` result (e.g. a quota error) for the error trace."""
+    if not message.usage:
+        return
+    usage = _sdk_token_usage(message.usage, [], "")
+    stash_response_usage(
+        LLMResponseUsage(
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cached_tokens=usage.cached_tokens,
+        )
+    )
+
+
 def _sdk_token_usage(usage: dict[str, Any] | None, messages: list[dict[str, Any]], text: str) -> TokenUsage:
     """Token counts from the usage block the CLI reports.
 
@@ -67,7 +97,8 @@ def _sdk_token_usage(usage: dict[str, Any] | None, messages: list[dict[str, Any]
         )
     parsed = _SdkUsage.model_validate(usage)
     cache_read = parsed.cache_read_input_tokens or 0
-    input_tokens = (parsed.input_tokens or 0) + cache_read + (parsed.cache_creation_input_tokens or 0)
+    cache_write = _sdk_cache_writes(usage, parsed.cache_creation_input_tokens)  # fork: anthropic-cache-writes
+    input_tokens = (parsed.input_tokens or 0) + cache_read + cache_write
     output_tokens = parsed.output_tokens or 0
     return TokenUsage(
         input_tokens=input_tokens,
@@ -446,6 +477,7 @@ class ClaudeCodeLLM(LLMInterface):
                                 # Surface the CLI's actual error text (e.g. quota
                                 # exhaustion) instead of the SDK's subtype-based
                                 # fallback exception (issue #2702).
+                                _stash_error_result_usage(message)  # fork: claude-code-error-usage
                                 raise _result_error(message)
                             # The run's total usage, as the CLI billed it.
                             sdk_usage = message.usage
