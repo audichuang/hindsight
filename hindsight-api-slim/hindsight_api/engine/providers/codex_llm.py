@@ -288,6 +288,28 @@ def _usage_from_completed_event(event_type: str | None, data: Any) -> TokenUsage
     )
 
 
+def _usage_from_failed_event(event_type: str | None, data: Any) -> TokenUsage | None:  # fork: codex-failed-usage
+    """The usage a ``response.failed`` or ``response.incomplete`` event carries, stashed when it is read.
+
+    Both are charged. A failed event raises right after this, so the stash is what the trace
+    records; an incomplete one ends the stream, so the parser also returns it as the reply's usage
+    instead of the char/4 estimate. Same ``response.usage`` shape as ``response.completed``.
+    """
+    if event_type not in ("response.failed", "response.incomplete") or not isinstance(data, dict):
+        return None
+    usage = _usage_from_completed_event("response.completed", data)
+    if usage is not None:
+        stash_response_usage(
+            LLMResponseUsage(
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cached_tokens=usage.cached_tokens,
+                thoughts_tokens=usage.thoughts_tokens,
+            )
+        )
+    return usage
+
+
 @dataclass(frozen=True, slots=True)
 class _CodexStreamReply:
     """What one Codex SSE stream carried: text, tool calls, and the backend's token usage."""
@@ -1000,6 +1022,7 @@ class CodexLLM(LLMInterface):
 
                 try:
                     data = json.loads(data_str)
+                    usage = _usage_from_failed_event(event_type, data) or usage  # fork: codex-failed-usage
                     _raise_on_sse_failure(event_type, data)
                     usage = _usage_from_completed_event(event_type, data) or usage
 
@@ -1260,6 +1283,7 @@ class CodexLLM(LLMInterface):
 
                 try:
                     data = json.loads(data_str)
+                    usage = _usage_from_failed_event(event_type, data) or usage  # fork: codex-failed-usage
                     _raise_on_sse_failure(event_type, data)
                     usage = _usage_from_completed_event(event_type, data) or usage
 
