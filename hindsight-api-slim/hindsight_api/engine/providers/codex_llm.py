@@ -26,9 +26,10 @@ from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Annotated, Any, Callable
 
 import aiohttp
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError
 
 from hindsight_api.engine.aiohttp_session import LoopLocalSession, UpstreamHTTPError, raise_for_status
 from hindsight_api.engine.llm_interface import (
@@ -38,7 +39,7 @@ from hindsight_api.engine.llm_interface import (
     LLMToolChoiceMode,
     ProviderRateLimitResetError,
 )
-from hindsight_api.engine.llm_trace import LLMResponseUsage, stash_response_usage
+from hindsight_api.engine.llm_trace import LLMResponseUsage, current_response_usage, stash_response_usage
 from hindsight_api.engine.llm_transport import build_aiohttp_timeout
 from hindsight_api.engine.providers.llm_debug import dump_request_on_4xx
 from hindsight_api.engine.providers.openai_compatible_llm import _strip_code_fences
@@ -202,6 +203,91 @@ class CodexStreamError(aiohttp.ClientPayloadError):
 
 
 _SSE_FAILURE_EVENTS = frozenset({"error", "response.failed"})
+
+
+# A usage counter: a real int (not bool) is kept, anything else (absent, null, a string) reads as 0.
+_CodexCount = Annotated[int, BeforeValidator(lambda v: v if isinstance(v, int) and not isinstance(v, bool) else 0)]
+
+
+def _dict_or_empty(value: object) -> object:
+    return value if isinstance(value, dict) else {}
+
+
+def _dict_or_none(value: object) -> object:
+    return value if isinstance(value, dict) else None
+
+
+class _CodexInputDetails(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    cached_tokens: _CodexCount = 0
+    cache_write_tokens: _CodexCount = 0
+
+
+class _CodexOutputDetails(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    reasoning_tokens: _CodexCount = 0
+
+
+class _CodexUsage(BaseModel):
+    """The ``usage`` block of a Responses API event. Unknown fields are ignored; a bad field reads as 0."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    input_tokens: _CodexCount = 0
+    output_tokens: _CodexCount = 0
+    input_tokens_details: Annotated[_CodexInputDetails, BeforeValidator(_dict_or_empty)] = Field(
+        default_factory=_CodexInputDetails
+    )
+    output_tokens_details: Annotated[_CodexOutputDetails, BeforeValidator(_dict_or_empty)] = Field(
+        default_factory=_CodexOutputDetails
+    )
+
+
+class _CodexResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    usage: Annotated[_CodexUsage | None, BeforeValidator(_dict_or_none)] = None
+
+
+class _CodexEvent(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    response: Annotated[_CodexResponse | None, BeforeValidator(_dict_or_none)] = None
+
+
+def _usage_from_codex_completed(data: Any) -> LLMResponseUsage | None:
+    """Read provider-reported usage from a ``response.completed`` style event.
+
+    ``input_tokens`` already includes the cached prefix. Reasoning tokens are
+    counted inside ``output_tokens``, so visible output is the remainder and
+    reasoning is reported separately as thoughts (the Responses API convention).
+    Returns None when the event carries no usage block.
+    """
+    if not isinstance(data, dict):
+        return None
+    try:
+        event = _CodexEvent.model_validate(data)
+    except ValidationError:
+        return None
+    usage = event.response.usage if event.response is not None else None
+    if usage is None:
+        return None
+    reasoning = usage.output_tokens_details.reasoning_tokens
+    result = LLMResponseUsage(
+        input_tokens=usage.input_tokens,
+        output_tokens=max(0, usage.output_tokens - reasoning),
+        cached_tokens=usage.input_tokens_details.cached_tokens,
+        thoughts_tokens=reasoning,
+    )
+
+    return result
+
+
+# Events whose ``response`` may carry the usage block. ``response.failed`` can carry
+# charged usage, so it is stashed before the failure is raised (#2387).
+_USAGE_EVENTS = frozenset({"response.completed", "response.incomplete", "response.failed"})
 
 
 def _raise_on_sse_failure(event_type: str | None, data: Any) -> None:
@@ -630,6 +716,7 @@ class CodexLLM(LLMInterface):
             try:
                 async with attempt_context() if attempt_context is not None else nullcontext():
                     set_stage(f"llm.codex.{scope}.attempt={attempt + 1}/{max_retries + 1}")
+                    usage_before = current_response_usage()
                     async with self._stream_request(url, payload, headers) as response:
                         # Forced-tool path: read structured output from the function-call
                         # arguments (already a JSON string in a dedicated channel) rather
@@ -641,15 +728,17 @@ class CodexLLM(LLMInterface):
                             tool_calls = []
                             content = await self._parse_sse_stream(response)
 
-                # Codex SSE carries no usage block; stash the same char/4 estimate
-                # the success path traces so a later parse/validate failure records
-                # consistent (estimated) token counts rather than zero (#2387).
-                stash_response_usage(
-                    LLMResponseUsage(
-                        input_tokens=sum(len(m.get("content", "")) for m in messages) // 4,
-                        output_tokens=len(content) // 4,
+                # A stream with no response.completed usage event carries no real
+                # counts; stash the same char/4 estimate the success path traces so a
+                # later parse/validate failure records consistent (estimated) token
+                # counts rather than zero (#2387).
+                if current_response_usage() is usage_before:
+                    stash_response_usage(
+                        LLMResponseUsage(
+                            input_tokens=sum(len(m.get("content", "")) for m in messages) // 4,
+                            output_tokens=len(content) // 4,
+                        )
                     )
-                )
 
                 # Handle structured output
                 if use_forced_tool:
@@ -704,6 +793,8 @@ class CodexLLM(LLMInterface):
                 else:
                     result = content
 
+                usage = current_response_usage() or LLMResponseUsage()
+
                 # Record metrics
                 duration = time.time() - start_time
                 metrics = get_metrics_collector()
@@ -712,18 +803,17 @@ class CodexLLM(LLMInterface):
                     model=self.model,
                     scope=scope,
                     duration=duration,
-                    input_tokens=0,  # Codex doesn't report token counts in SSE
-                    output_tokens=0,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
                     success=True,
+                    cached_input_tokens=usage.cached_tokens,
+                    thoughts_tokens=usage.thoughts_tokens,
                 )
 
                 # Record trace span
                 try:
                     from hindsight_api.tracing import _serialize_for_span, get_span_recorder
 
-                    # Estimate tokens for tracing
-                    estimated_input = sum(len(m.get("content", "")) for m in messages) // 4
-                    estimated_output = len(content) // 4
                     span_recorder = get_span_recorder()
                     span_recorder.record_llm_call(
                         provider=self.provider,
@@ -731,23 +821,25 @@ class CodexLLM(LLMInterface):
                         scope=scope,
                         messages=messages,
                         response_content=_serialize_for_span(result),
-                        input_tokens=estimated_input,
-                        output_tokens=estimated_output,
+                        input_tokens=usage.input_tokens,
+                        output_tokens=usage.output_tokens,
                         duration=duration,
                         finish_reason=None,
                         error=None,
+                        cached_tokens=usage.cached_tokens,
+                        thoughts_tokens=usage.thoughts_tokens,
                     )
                 except Exception as span_error:
                     # Tracing must remain best-effort, but expose instrumentation
                     # bugs that would otherwise silently erase spans (#3025).
                     logger.debug("Codex span recording failed: %s", span_error, exc_info=True)
 
-                estimated_input = sum(len(m.get("content", "")) for m in messages) // 4
-                estimated_output = len(content) // 4
                 token_usage = TokenUsage(
-                    input_tokens=estimated_input,
-                    output_tokens=estimated_output,
-                    total_tokens=estimated_input + estimated_output,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    total_tokens=usage.input_tokens + usage.output_tokens,
+                    cached_tokens=usage.cached_tokens,
+                    thoughts_tokens=usage.thoughts_tokens,
                 )
                 return LLMCallResult(content=result, usage=token_usage)
 
@@ -940,6 +1032,10 @@ class CodexLLM(LLMInterface):
 
                 try:
                     data = json.loads(data_str)
+                    if event_type in _USAGE_EVENTS:
+                        usage = _usage_from_codex_completed(data)
+                        if usage is not None:
+                            stash_response_usage(usage)
                     _raise_on_sse_failure(event_type, data)
 
                     # Extract content based on event type
@@ -1105,6 +1201,7 @@ class CodexLLM(LLMInterface):
                         logger.error(detail)
                     raise
 
+        usage_before = current_response_usage()
         try:
             try:
                 content, tool_calls = await _request_attempt(1)
@@ -1134,6 +1231,12 @@ class CodexLLM(LLMInterface):
                     )
                     raise auth_error
 
+            # Usage comes from the response.completed event; a stream without one
+            # (or only the usage of an earlier call) reports zeros.
+            usage = current_response_usage()
+            if usage is usage_before or usage is None:
+                usage = LLMResponseUsage()
+
             duration = time.time() - start_time
             metrics = get_metrics_collector()
             metrics.record_llm_call(
@@ -1141,9 +1244,11 @@ class CodexLLM(LLMInterface):
                 model=self.model,
                 scope=scope,
                 duration=duration,
-                input_tokens=0,
-                output_tokens=0,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
                 success=True,
+                cached_input_tokens=usage.cached_tokens,
+                thoughts_tokens=usage.thoughts_tokens,
             )
 
             # Record OpenTelemetry span
@@ -1163,12 +1268,14 @@ class CodexLLM(LLMInterface):
                     scope=scope,
                     messages=messages,
                     response_content=content,
-                    input_tokens=0,  # Codex doesn't provide token counts
-                    output_tokens=0,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
                     duration=duration,
                     finish_reason="tool_calls" if tool_calls else "stop",
                     error=None,
                     tool_calls=tool_calls_dict,
+                    cached_tokens=usage.cached_tokens,
+                    thoughts_tokens=usage.thoughts_tokens,
                 )
             except Exception:
                 pass  # logging failure must never affect the operation
@@ -1177,8 +1284,10 @@ class CodexLLM(LLMInterface):
                 content=content,
                 tool_calls=tool_calls,
                 finish_reason="tool_calls" if tool_calls else "stop",
-                input_tokens=0,
-                output_tokens=0,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cached_tokens=usage.cached_tokens,
+                thoughts_tokens=usage.thoughts_tokens,
             )
 
         except Exception as e:
@@ -1212,6 +1321,10 @@ class CodexLLM(LLMInterface):
 
                 try:
                     data = json.loads(data_str)
+                    if event_type in _USAGE_EVENTS:
+                        usage = _usage_from_codex_completed(data)
+                        if usage is not None:
+                            stash_response_usage(usage)
                     _raise_on_sse_failure(event_type, data)
 
                     # Extract text content
