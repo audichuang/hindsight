@@ -1,0 +1,158 @@
+# Fork CI: the gate a feature branch passes before it lands on `develop`.
+#
+# Flow: feature/* --PR--> develop (this workflow) --> patched (tag --> image).
+# Upstream's test.yml only runs on PRs to main and leans on secrets this fork
+# does not have, so this file runs the subset that needs no provider
+# credentials: the api-slim suite without real-LLM markers, ty, lint (no diff
+# allowed), the OpenAPI spec, and the control plane. See FORK.md "Branches".
+name: Fork CI
+
+on:
+  pull_request:
+    branches: [develop, patched]
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    name: api-tests (${{ matrix.shard }}/3)
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true
+        prune-cache: false
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version-file: ".python-version"
+
+    - name: Cache hindsight-api-slim/.venv
+      uses: actions/cache@v5
+      with:
+        path: hindsight-api-slim/.venv
+        key: ${{ runner.os }}-venv-fork-ci-${{ hashFiles('uv.lock', 'hindsight-api-slim/pyproject.toml', '.python-version') }}
+
+    - name: Install dependencies
+      working-directory: ./hindsight-api-slim
+      run: uv sync --frozen --all-extras --index-strategy unsafe-best-match
+
+    - name: Cache HuggingFace models
+      uses: actions/cache@v5
+      with:
+        path: ~/.cache/huggingface
+        key: ${{ runner.os }}-huggingface-${{ hashFiles('hindsight-api-slim/pyproject.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-huggingface-
+
+    - name: Pre-download models
+      working-directory: ./hindsight-api-slim
+      run: |
+        uv run python -c "
+        from sentence_transformers import SentenceTransformer, CrossEncoder
+        SentenceTransformer('BAAI/bge-small-en-v1.5')
+        CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+        "
+
+    - name: Run tests (shard ${{ matrix.shard }}/3)
+      working-directory: ./hindsight-api-slim
+      run: uv run --with pytest-split pytest tests -m "not hs_llm_mat and not hs_llm_core" --splits 3 --group ${{ matrix.shard }}
+
+  typecheck-and-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version-file: ".python-version"
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: '24'
+        cache: 'npm'
+        cache-dependency-path: package-lock.json
+
+    - name: Install dependencies
+      run: |
+        npm ci
+        (cd hindsight-api-slim && uv sync --frozen --all-extras --index-strategy unsafe-best-match)
+        (cd hindsight-dev && uv sync --frozen --index-strategy unsafe-best-match)
+
+    - name: ty check (api-slim, all extras)
+      working-directory: ./hindsight-api-slim
+      run: uv run ty check
+
+    - name: Lint (must leave no diff)
+      run: |
+        ./scripts/hooks/lint.sh
+        git diff --exit-code
+
+    - name: OpenAPI spec is up to date
+      working-directory: hindsight-dev
+      run: |
+        uv run generate-openapi
+        git diff --exit-code -- ../hindsight-docs/static/openapi.json
+
+  control-plane:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: '24'
+        cache: 'npm'
+        cache-dependency-path: package-lock.json
+
+    - name: Install and build the TypeScript SDK
+      run: |
+        npm ci --workspace=hindsight-clients/typescript
+        npm run build --workspace=hindsight-clients/typescript
+
+    # Same lightningcss re-install as upstream's build-control-plane job.
+    - name: Install Control Plane dependencies
+      run: |
+        npm install --workspace=hindsight-control-plane
+        rm -rf node_modules/lightningcss node_modules/@tailwindcss
+        npm install lightningcss @tailwindcss/postcss @tailwindcss/node
+
+    - name: Test
+      run: npm test --workspace=hindsight-control-plane
+
+    - name: i18n parity
+      run: npm run i18n:check --workspace=hindsight-control-plane
+
+    - name: knip (unused files / dependencies)
+      working-directory: hindsight-control-plane
+      run: npx --yes knip@5 --no-progress --include files,dependencies,unlisted
+
+    - name: Build
+      run: npm run build --workspace=hindsight-control-plane
