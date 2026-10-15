@@ -71,9 +71,19 @@ jobs:
         CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
         "
 
+    # Deselected: tests that need credentials this fork's CI does not hold.
+    # The fact-extraction ones call a real OpenAI model without a marker
+    # (upstream runs them with secrets); the Copilot case needs a signed-in
+    # Copilot CLI. They fail the same way on develop with no feature applied.
     - name: Run tests (shard ${{ matrix.shard }}/3)
       working-directory: ./hindsight-api-slim
-      run: uv run --with pytest-split pytest tests -m "not hs_llm_mat and not hs_llm_core" --splits 3 --group ${{ matrix.shard }}
+      run: >-
+        uv run --with pytest-split pytest tests
+        -m "not hs_llm_mat and not hs_llm_core"
+        --deselect tests/test_fact_extraction_analysis.py
+        --deselect tests/test_fact_extraction_output_ratio.py
+        --deselect "tests/test_llm_timeout_propagation.py::test_every_network_provider_receives_the_resolved_timeout[github-copilot-extra3]"
+        --splits 3 --group ${{ matrix.shard }}
 
   typecheck-and-lint:
     runs-on: ubuntu-latest
