@@ -80,6 +80,7 @@ logger = logging.getLogger(__name__)
 # Use a neutral version because Hindsight must not claim a specific Codex release.
 _CODEX_ORIGINATOR = "codex_cli_rs"
 _CODEX_USER_AGENT = "codex_cli_rs/0.0.0 (Hindsight)"
+_CODEX_SESSION_HEADER = "session-id"
 
 # Name of the single forced function tool used to carry structured output when
 # strict_schema is on. The Codex backend speaks the OpenAI Responses API, so a
@@ -90,6 +91,12 @@ _STRUCTURED_TOOL_NAME = "structured_response"
 
 # Valid JSON string escape characters (the char that may follow a backslash).
 _VALID_JSON_ESCAPE_CHARS = set('"\\/bfnrtu')
+
+
+def _session_id_of(payload: dict[str, Any]) -> str | None:
+    """The request's session id: the effective ``prompt_cache_key``, operator overrides included."""
+    key = payload.get("prompt_cache_key")
+    return key if isinstance(key, str) and key else None
 
 
 def _repair_invalid_json_escapes(text: str) -> str:
@@ -426,8 +433,8 @@ class CodexLLM(LLMInterface):
     def account_id(self) -> str:
         return self._auth_manager.account_id
 
-    def _build_request_headers(self) -> dict[str, str]:
-        return {
+    def _build_request_headers(self, session_id: str | None = None) -> dict[str, str]:
+        headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json",
             # Must be "ChatGPT-Account-ID" — the name the official Codex CLI
@@ -441,6 +448,13 @@ class CodexLLM(LLMInterface):
             "Origin": "https://chatgpt.com",
             "originator": _CODEX_ORIGINATOR,
         }
+        if session_id:
+            # The ChatGPT backend derives prompt-cache affinity from this header, not
+            # only from the body's prompt_cache_key (codex-rs/core/src/client.rs,
+            # "ChatGPT derives cache affinity from the Responses session-id header").
+            # The current CLI spells it session-id; older clients sent session_id.
+            headers.setdefault(_CODEX_SESSION_HEADER, session_id)
+        return headers
 
     @property
     def refresh_token(self) -> str | None:
@@ -695,7 +709,7 @@ class CodexLLM(LLMInterface):
             payload["tool_choice"] = {"type": "function", "name": _STRUCTURED_TOOL_NAME}
             payload["parallel_tool_calls"] = False
 
-        headers = self._build_request_headers()
+        headers = self._build_request_headers(session_id=_session_id_of(payload))
 
         url = f"{self.base_url}/codex/responses"
 
@@ -1135,7 +1149,7 @@ class CodexLLM(LLMInterface):
         }
         payload.update(self._extra_body)
 
-        headers = self._build_request_headers()
+        headers = self._build_request_headers(session_id=_session_id_of(payload))
 
         url = f"{self.base_url}/codex/responses"
 
