@@ -64,6 +64,21 @@ def _raise_on_refusal(response: Any) -> None:
         raise ProviderContentPolicyError(f"Anthropic refused the request (stop_reason={stop_reason}); not retrying")
 
 
+def _int(v: Any) -> int:
+    """Return v when it is a real int (not bool), else 0."""
+    return v if isinstance(v, int) and not isinstance(v, bool) else 0
+
+
+def _cache_write_tokens(usage: Any) -> int:
+    """Cache writes of one call: the reported total, or the TTL breakdown when that is larger. A missing
+    total must not leave the nested writes out of the folded input (they are priced as writes)."""
+    creation = getattr(usage, "cache_creation", None)
+    ttl_writes = _int(getattr(creation, "ephemeral_5m_input_tokens", None)) + _int(
+        getattr(creation, "ephemeral_1h_input_tokens", None)
+    )
+    return max(_int(getattr(usage, "cache_creation_input_tokens", None)), ttl_writes)
+
+
 def _usage_from_anthropic_response(response: Any) -> LLMResponseUsage:
     """Extract input/output/cached token counts from an Anthropic usage block.
 
@@ -74,7 +89,7 @@ def _usage_from_anthropic_response(response: Any) -> LLMResponseUsage:
     if not usage:
         return LLMResponseUsage()
     cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
-    cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    cache_write = _cache_write_tokens(usage)
     return LLMResponseUsage(
         input_tokens=(usage.input_tokens or 0) + cache_read + cache_write,
         output_tokens=usage.output_tokens or 0,
