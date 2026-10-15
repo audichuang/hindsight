@@ -1,11 +1,12 @@
-"""Fork: LLM cost endpoints (cost-accounting).
+"""Fork: LLM cost and quota endpoints (cost-accounting).
 
-Registered only when ``HINDSIGHT_API_LLM_COST_ENABLED`` is on. The routes are
+Registered only when ``HINDSIGHT_API_LLM_COST_ENABLED`` (cost routes) or
+``HINDSIGHT_API_LLM_COST_QUOTA_ENABLED`` (quota route) is on; either may be on alone. The routes are
 excluded from the OpenAPI schema, so the upstream client surface does not change. They are added with
 ``app.get`` rather than a separate ``APIRouter`` so they keep the app's ``UnknownParamsRoute`` route class.
 
 This module only parses query parameters and maps errors. The reads and the pricing live in
-``engine/llm_cost_store.py`` and ``engine/llm_cost.py``.
+``engine/llm_cost_store.py`` and ``engine/llm_cost.py``; the quota snapshot lives in ``engine/llm_quota.py``.
 """
 
 from collections.abc import Callable
@@ -22,6 +23,7 @@ from hindsight_api.engine.llm_cost import (
     parse_timezone,
 )
 from hindsight_api.engine.llm_cost_store import CostQuery, LLMCostError, LLMCostStore
+from hindsight_api.engine.llm_quota import LLMQuotaResponse, LLMQuotaService, QuotaSettings, load_quota_settings
 from hindsight_api.extensions import AuthenticationError, OperationValidationError
 from hindsight_api.models import RequestContext
 
@@ -61,10 +63,13 @@ def _as_http_error(exc: Exception, where: str) -> HTTPException:
 
 
 def register_llm_cost_routes(app: FastAPI, get_request_context: Callable[..., RequestContext]) -> None:
-    """Register the cost routes on ``app`` when the feature is enabled. A bad env var raises here."""
+    """Register the cost and quota routes on ``app`` when their features are enabled. A bad env var raises here."""
     cost_settings = load_cost_settings()
+    quota_settings = load_quota_settings()
     if cost_settings.enabled:
         _register_cost_routes(app, get_request_context, cost_settings)
+    if quota_settings.enabled:
+        _register_quota_route(app, get_request_context, quota_settings)
 
 
 def _register_cost_routes(
@@ -126,3 +131,34 @@ def _register_cost_routes(
         except Exception as e:
             raise _as_http_error(e, where)
 
+
+def _register_quota_route(
+    app: FastAPI, get_request_context: Callable[..., RequestContext], settings: QuotaSettings
+) -> None:
+    # One service per process, created on the first request: app.state.memory may not exist yet at
+    # registration. Its snapshot cache lives on the instance, so it must be reused.
+    service: LLMQuotaService | None = None
+
+    def _quota() -> LLMQuotaService:
+        nonlocal service
+        if service is None:
+            service = LLMQuotaService(app.state.memory, settings)
+        return service
+
+    @app.get(
+        "/v1/default/banks/{bank_id}/llm-requests/quota",
+        include_in_schema=False,
+        response_model=LLMQuotaResponse,
+    )
+    async def api_llm_request_quota(
+        bank_id: str,
+        request_context: RequestContext = Depends(get_request_context),
+    ) -> LLMQuotaResponse:
+        """Server-wide LLM plan quota snapshot (the server's lanes, not this bank's). Bank checks as for cost."""
+        where = f"GET /v1/default/banks/{bank_id}/llm-requests/quota"
+        try:
+            return await _quota().snapshot(bank_id, request_context)
+        except (AuthenticationError, HTTPException):
+            raise
+        except Exception as e:
+            raise _as_http_error(e, where)

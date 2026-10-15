@@ -21,6 +21,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { LLMRequestEntry } from "@/lib/api";
+import { LLMQuotaCard } from "@/components/fork/llm-quota-card";
 import { useFeatures } from "@/lib/features-context";
 import {
   browserTimeZone,
@@ -274,7 +275,7 @@ export function LLMCostPanel({ bankId }: { bankId: string }) {
   const current = load?.key === key ? load : null;
   if (!enabled) return null;
 
-  // The card hides itself when the cost endpoint answers 404.
+  // Only the cost card hides itself when the cost endpoint answers 404; the quota card stays.
   const costCard =
     current?.status === "off" ? null : (
       <Card>
@@ -302,7 +303,12 @@ export function LLMCostPanel({ bankId }: { bankId: string }) {
       </Card>
     );
 
-  return costCard;
+  return (
+    <>
+      <LLMQuotaCard bankId={bankId} />
+      {costCard}
+    </>
+  );
 }
 
 /** "3 provider-reported · 2 estimated · 4 included in plan · 0 unknown", in the locale's words. */

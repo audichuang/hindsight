@@ -1,16 +1,24 @@
 // fork: cost-accounting
-// Server side of the fork cost proxies. Forwards one GET to a dataplane endpoint and maps
-// failures to a message. The message is English only: the cost panel
-// shows its own localized copy, so no i18n catalog key is needed (see src/components/fork/).
+// Server side of the fork cost and quota proxies. Forwards one GET to a dataplane endpoint and maps
+// failures to endpoint-specific messages. The messages are English only: the cost and quota panels
+// show their own localized copy, so no i18n catalog key is needed (see src/components/fork/).
 
 import { NextResponse } from "next/server";
 import { dataplaneBankUrl, getDataplaneHeaders } from "@/lib/hindsight-client";
 
 export const COST_LOAD_ERROR = "Failed to get LLM cost data";
+export const QUOTA_LOAD_ERROR = "Failed to get LLM quota data";
 
-export type LLMForkEndpoint = "/llm-requests/cost" | "/llm-requests/cost/rows";
+export type LLMForkEndpoint =
+  | "/llm-requests/cost"
+  | "/llm-requests/cost/rows"
+  | "/llm-requests/quota";
 
-/** Forwards `GET /llm-requests/cost[/rows]` for one bank, passing the query string through unchanged. */
+function loadErrorFor(endpoint: LLMForkEndpoint): string {
+  return endpoint === "/llm-requests/quota" ? QUOTA_LOAD_ERROR : COST_LOAD_ERROR;
+}
+
+/** Forwards `GET /llm-requests/cost[/rows]` or `GET /llm-requests/quota` for one bank, passing the query string through unchanged. */
 export async function proxyLLMCost(
   request: Request,
   bankId: string | undefined,
@@ -19,7 +27,7 @@ export async function proxyLLMCost(
   if (!bankId) {
     return NextResponse.json({ error: "bank_id is required" }, { status: 400 });
   }
-  const loadError = COST_LOAD_ERROR;
+  const loadError = loadErrorFor(endpoint);
   try {
     const query = new URL(request.url).searchParams.toString();
     const response = await fetch(
