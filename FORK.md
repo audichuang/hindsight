@@ -4,6 +4,10 @@ Branch `patched` is upstream's release tag plus a few fork commits, re-applied b
 
 Each feature patch has its own `FORK-<NAME>.md` at the repo root: what it does, its env vars, why it is designed that way, and how to maintain it. Bug-fix patches are small enough to explain in their commit message.
 
+## Branches
+
+Work lands in three steps: a `feature/<name>` branch off `develop`, a PR into `develop`, then `develop` into `patched` when it is released. `.github/workflows/fork-ci.yml` runs on every PR into `develop` or `patched` and on every push to `develop`; merge only when it is green. It runs the checks that need no provider credentials (the api-slim suite without real-LLM markers, `ty`, lint with no diff, the OpenAPI spec, the control plane), so the real-LLM checks in "Before tagging" still run locally. Upstream's `test.yml` only runs on PRs to `main` and does not run here. On an upstream rebase, rebuild `develop` from the new `patched`.
+
 ## Rules
 
 - **New logic goes in new files.** Use a fork-owned module (e.g. `engine/reranker_routing.py`) and a fork-owned test file. Do not edit upstream test files; add fork tests next to them.
