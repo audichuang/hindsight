@@ -449,6 +449,7 @@ class ClaudeCodeLLM(LLMInterface):
                 # the SDK does not always report (#2387 keeps failure traces consistent).
                 real_usage = _usage_from_sdk_usage(raw_usage)
                 if real_usage is None:
+                    raw_usage = None  # fork: cost-accounting (None marks the estimate for the cost hook)
                     real_usage = LLMResponseUsage(
                         input_tokens=sum(len(m.get("content", "")) for m in messages) // 4,
                         output_tokens=len(full_text) // 4,
@@ -501,6 +502,7 @@ class ClaudeCodeLLM(LLMInterface):
 
                 # Record trace span
                 try:
+                    from hindsight_api.engine.llm_cost import claude_code_usage_kwargs  # fork: cost-accounting
                     from hindsight_api.tracing import _serialize_for_span, get_span_recorder
 
                     span_recorder = get_span_recorder()
@@ -516,6 +518,7 @@ class ClaudeCodeLLM(LLMInterface):
                         duration=duration,
                         finish_reason=None,
                         error=None,
+                        **claude_code_usage_kwargs(raw_usage),  # fork: cost-accounting
                     )
                 except Exception as span_error:
                     # Tracing must remain best-effort, but expose instrumentation
@@ -817,6 +820,7 @@ class ClaudeCodeLLM(LLMInterface):
                 # Prefer the SDK's real usage; fall back to the char/4 estimate.
                 real_usage = _usage_from_sdk_usage(raw_usage)
                 if real_usage is None:
+                    raw_usage = None  # fork: cost-accounting (None marks the estimate for the cost hook)
                     real_usage = LLMResponseUsage(
                         input_tokens=sum(len(m.get("content", "")) for m in messages) // 4,
                         output_tokens=len(full_text) // 4,
@@ -840,6 +844,7 @@ class ClaudeCodeLLM(LLMInterface):
                 # Record trace span. The wrapper records only failed calls, so without
                 # this a successful tool round never reaches the traces (#5381).
                 try:
+                    from hindsight_api.engine.llm_cost import claude_code_usage_kwargs  # fork: cost-accounting
                     from hindsight_api.tracing import get_span_recorder
 
                     get_span_recorder().record_llm_call(
@@ -855,6 +860,7 @@ class ClaudeCodeLLM(LLMInterface):
                         finish_reason="tool_calls" if tool_calls else "stop",
                         error=None,
                         tool_calls=[{"id": c.id, "name": c.name, "arguments": c.arguments} for c in tool_calls] or None,
+                        **claude_code_usage_kwargs(raw_usage),  # fork: cost-accounting
                     )
                 except Exception as span_error:
                     logger.debug("Claude Code span recording failed: %s", span_error, exc_info=True)

@@ -518,6 +518,9 @@ class LLMTraceRecorder:
             llm_info["finish_reason"] = finish_reason
         if tool_calls:
             llm_info["tool_calls"] = [tc.get("name", "") for tc in tool_calls]
+        from .llm_cost import trace_usage_info  # fork: cost-accounting
+
+        llm_info.update(trace_usage_info(_extra))  # fork: cost-accounting
 
         record = LLMRequestRecord(
             provider=provider,

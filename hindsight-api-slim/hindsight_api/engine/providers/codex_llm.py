@@ -281,7 +281,9 @@ def _usage_from_codex_completed(data: Any) -> LLMResponseUsage | None:
         cached_tokens=usage.input_tokens_details.cached_tokens,
         thoughts_tokens=reasoning,
     )
+    from hindsight_api.engine.llm_cost import note_codex_usage  # fork: cost-accounting
 
+    note_codex_usage(result, usage.input_tokens_details.cache_write_tokens)  # fork: cost-accounting
     return result
 
 
@@ -812,6 +814,7 @@ class CodexLLM(LLMInterface):
 
                 # Record trace span
                 try:
+                    from hindsight_api.engine.llm_cost import codex_usage_kwargs  # fork: cost-accounting
                     from hindsight_api.tracing import _serialize_for_span, get_span_recorder
 
                     span_recorder = get_span_recorder()
@@ -828,6 +831,7 @@ class CodexLLM(LLMInterface):
                         error=None,
                         cached_tokens=usage.cached_tokens,
                         thoughts_tokens=usage.thoughts_tokens,
+                        **codex_usage_kwargs(usage),  # fork: cost-accounting
                     )
                 except Exception as span_error:
                     # Tracing must remain best-effort, but expose instrumentation
@@ -1253,6 +1257,7 @@ class CodexLLM(LLMInterface):
 
             # Record OpenTelemetry span
             try:
+                from hindsight_api.engine.llm_cost import codex_usage_kwargs  # fork: cost-accounting
                 from hindsight_api.tracing import get_span_recorder
 
                 span_recorder = get_span_recorder()
@@ -1276,6 +1281,7 @@ class CodexLLM(LLMInterface):
                     tool_calls=tool_calls_dict,
                     cached_tokens=usage.cached_tokens,
                     thoughts_tokens=usage.thoughts_tokens,
+                    **codex_usage_kwargs(usage),  # fork: cost-accounting
                 )
             except Exception:
                 pass  # logging failure must never affect the operation

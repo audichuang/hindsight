@@ -313,6 +313,7 @@ class OpenAIResponsesLLM(LLMInterface):
         response_content: Any,
         finish_reason: str,
         tool_calls_dict: list[dict[str, Any]] | None = None,
+        response: Any = None,  # fork: cost-accounting
     ) -> None:
         """Record metrics + a trace span for a successful call (shared by both paths)."""
         get_metrics_collector().record_llm_call(
@@ -327,6 +328,7 @@ class OpenAIResponsesLLM(LLMInterface):
             thoughts_tokens=usage.thoughts_tokens,
         )
 
+        from hindsight_api.engine.llm_cost import openai_responses_usage_kwargs  # fork: cost-accounting
         from hindsight_api.tracing import _serialize_for_span, get_span_recorder
 
         get_span_recorder().record_llm_call(
@@ -343,6 +345,7 @@ class OpenAIResponsesLLM(LLMInterface):
             cached_tokens=usage.cached_tokens,
             thoughts_tokens=usage.thoughts_tokens,
             tool_calls=tool_calls_dict,
+            **openai_responses_usage_kwargs(response),  # fork: cost-accounting
         )
 
     async def _run_with_retries(
@@ -519,6 +522,7 @@ class OpenAIResponsesLLM(LLMInterface):
                 span_messages=params["input"],
                 response_content=result,
                 finish_reason=getattr(response, "status", "completed"),
+                response=response,  # fork: cost-accounting
             )
             if duration > 10.0:
                 logger.info(
@@ -648,6 +652,7 @@ class OpenAIResponsesLLM(LLMInterface):
                     if tool_calls
                     else None
                 ),
+                response=response,  # fork: cost-accounting
             )
 
             return LLMToolCallResult(
