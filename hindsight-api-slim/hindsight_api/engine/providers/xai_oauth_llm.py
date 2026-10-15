@@ -151,6 +151,7 @@ class _ChatUsage(BaseModel):
     total_tokens: int = 0
     prompt_tokens_details: _PromptTokensDetails | None = None
     completion_tokens_details: _CompletionTokensDetails | None = None
+    cost_in_usd_ticks: object = None  # fork: cost-accounting (tolerant: a bad value never fails the parse)
 
 
 class _ChatToolCallFunction(BaseModel):
@@ -787,6 +788,9 @@ class XaiOAuthLLM(LLMInterface):
 
                 duration = time.perf_counter() - start_time
                 self._record_success(scope=scope, duration=duration, counts=counts)
+                from hindsight_api.engine.llm_cost import xai_oauth_usage_kwargs  # fork: cost-accounting
+
+                fork_ticks = completion.usage.cost_in_usd_ticks if completion.usage else None  # fork: cost-accounting
                 self._record_span(
                     scope=scope,
                     messages=body["messages"],
@@ -794,6 +798,7 @@ class XaiOAuthLLM(LLMInterface):
                     counts=counts,
                     duration=duration,
                     finish_reason=completion_content.finish_reason,
+                    fork_usage=xai_oauth_usage_kwargs(fork_ticks),  # fork: cost-accounting
                 )
 
                 return LLMCallResult(
@@ -905,6 +910,9 @@ class XaiOAuthLLM(LLMInterface):
                 duration = time.perf_counter() - start_time
                 finish_reason = choice.finish_reason if choice is not None else None
                 self._record_success(scope=scope, duration=duration, counts=counts)
+                from hindsight_api.engine.llm_cost import xai_oauth_usage_kwargs  # fork: cost-accounting
+
+                fork_ticks = completion.usage.cost_in_usd_ticks if completion.usage else None  # fork: cost-accounting
                 self._record_span(
                     scope=scope,
                     messages=body["messages"],
@@ -913,6 +921,7 @@ class XaiOAuthLLM(LLMInterface):
                     duration=duration,
                     finish_reason=finish_reason,
                     tool_calls=tool_calls,
+                    fork_usage=xai_oauth_usage_kwargs(fork_ticks),  # fork: cost-accounting
                 )
 
                 return LLMToolCallResult(
@@ -1037,6 +1046,7 @@ class XaiOAuthLLM(LLMInterface):
         duration: float,
         finish_reason: str | None,
         tool_calls: list[LLMToolCall] | None = None,
+        fork_usage: dict[str, Any] | None = None,  # fork: cost-accounting
     ) -> None:
         """Record the GenAI span. Best-effort, but never silently swallowed."""
         try:
@@ -1060,6 +1070,7 @@ class XaiOAuthLLM(LLMInterface):
                     if tool_calls
                     else None
                 ),
+                **(fork_usage or {}),  # fork: cost-accounting
             )
         except Exception as span_error:
             # Tracing stays best-effort, but instrumentation bugs that would

@@ -191,6 +191,9 @@ def create_worker_app(poller: WorkerPoller, memory):
 def main():
     """Main entry point for the hindsight-worker CLI."""
     load_dotenv_for_entrypoint()
+    from ..engine.llm_cost import load_cost_settings  # fork: cost-accounting
+
+    load_cost_settings()  # fork: cost-accounting (a bad HINDSIGHT_API_LLM_COST_* value fails the worker at startup)
 
     # Load configuration from environment
     config = get_config()

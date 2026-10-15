@@ -279,13 +279,17 @@ def _usage_from_completed_event(event_type: str | None, data: Any) -> TokenUsage
     cached = (usage.input_tokens_details.cached_tokens if usage.input_tokens_details else None) or 0
     reasoning = (usage.output_tokens_details.reasoning_tokens if usage.output_tokens_details else None) or 0
     visible_output = max(0, (usage.output_tokens or 0) - reasoning)
-    return TokenUsage(
+    result = TokenUsage(
         input_tokens=input_tokens,
         output_tokens=visible_output,
         total_tokens=input_tokens + visible_output,
         cached_tokens=cached,
         thoughts_tokens=reasoning,
     )
+    from hindsight_api.engine.llm_cost import note_codex_usage  # fork: cost-accounting
+
+    note_codex_usage(result, data)  # fork: cost-accounting
+    return result
 
 
 def _usage_from_failed_event(event_type: str | None, data: Any) -> TokenUsage | None:  # fork: codex-failed-usage
@@ -808,6 +812,7 @@ class CodexLLM(LLMInterface):
 
                 # Record trace span
                 try:
+                    from hindsight_api.engine.llm_cost import codex_usage_kwargs  # fork: cost-accounting
                     from hindsight_api.tracing import _serialize_for_span, get_span_recorder
 
                     span_recorder = get_span_recorder()
@@ -824,6 +829,7 @@ class CodexLLM(LLMInterface):
                         error=None,
                         cached_tokens=token_usage.cached_tokens,
                         thoughts_tokens=token_usage.thoughts_tokens,
+                        **codex_usage_kwargs(token_usage),  # fork: cost-accounting
                     )
                 except Exception as span_error:
                     # Tracing must remain best-effort, but expose instrumentation
@@ -1214,6 +1220,7 @@ class CodexLLM(LLMInterface):
 
             # Record OpenTelemetry span
             try:
+                from hindsight_api.engine.llm_cost import codex_usage_kwargs  # fork: cost-accounting
                 from hindsight_api.tracing import get_span_recorder
 
                 span_recorder = get_span_recorder()
@@ -1237,6 +1244,7 @@ class CodexLLM(LLMInterface):
                     tool_calls=tool_calls_dict,
                     cached_tokens=usage.cached_tokens,
                     thoughts_tokens=usage.thoughts_tokens,
+                    **codex_usage_kwargs(usage),  # fork: cost-accounting
                 )
             except Exception:
                 pass  # logging failure must never affect the operation
