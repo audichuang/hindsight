@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { localizeApiErrorPayload } from "@/lib/i18n/api-errors";
 import { sdk, lowLevelClient } from "@/lib/hindsight-client";
+import { llmCostPanelEnabled } from "@/lib/fork/llm-cost"; // fork: cost-accounting
 
 export async function GET(request: Request) {
   try {
@@ -22,6 +23,7 @@ export async function GET(request: Request) {
     const data = response.data as Record<string, unknown>;
     const features = (data.features ?? {}) as Record<string, boolean>;
     features.access_key_auth = !!process.env.HINDSIGHT_CP_ACCESS_KEY;
+    features.llm_cost = llmCostPanelEnabled(process.env.HINDSIGHT_CP_LLM_COST_ENABLED); // fork: cost-accounting
     data.features = features;
 
     return NextResponse.json(data, { status: 200 });

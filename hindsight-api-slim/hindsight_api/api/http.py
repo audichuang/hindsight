@@ -10735,3 +10735,8 @@ def _register_routes(app: FastAPI):
             raise
         except Exception as e:
             raise _internal_error(e, f"GET /v1/default/banks/{bank_id}/llm-requests/stats")
+
+    # fork: cost-accounting
+    from hindsight_api.api.llm_cost_routes import register_llm_cost_routes
+
+    register_llm_cost_routes(app, get_request_context)

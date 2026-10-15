@@ -462,6 +462,8 @@ class AnthropicLLM(LLMInterface):
 
                 finish_reason = response.stop_reason if hasattr(response, "stop_reason") else None
                 span_recorder = get_span_recorder()
+                from hindsight_api.engine.llm_cost import anthropic_cache_write_kwargs  # fork: cost-accounting
+
                 span_recorder.record_llm_call(
                     provider=self.provider,
                     model=self.model,
@@ -474,6 +476,7 @@ class AnthropicLLM(LLMInterface):
                     finish_reason=finish_reason,
                     error=None,
                     cached_tokens=cached_tokens,
+                    **anthropic_cache_write_kwargs(response),  # fork: cost-accounting
                 )
 
                 # Log slow calls
@@ -715,6 +718,8 @@ class AnthropicLLM(LLMInterface):
                 from hindsight_api.tracing import get_span_recorder
 
                 span_recorder = get_span_recorder()
+                from hindsight_api.engine.llm_cost import anthropic_cache_write_kwargs  # fork: cost-accounting
+
                 # Convert LLMToolCall objects to dicts for span recording
                 tool_calls_dict = (
                     [{"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in tool_calls]
@@ -734,6 +739,7 @@ class AnthropicLLM(LLMInterface):
                     error=None,
                     tool_calls=tool_calls_dict,
                     cached_tokens=cached_tokens,
+                    **anthropic_cache_write_kwargs(response),  # fork: cost-accounting
                 )
 
                 return LLMToolCallResult(

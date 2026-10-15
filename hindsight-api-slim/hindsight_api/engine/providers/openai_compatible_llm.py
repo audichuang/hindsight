@@ -1480,6 +1480,7 @@ class OpenAICompatibleLLM(LLMInterface):
                 )
 
                 # Record trace span
+                from hindsight_api.engine.llm_cost import openai_compatible_usage_kwargs  # fork: cost-accounting
                 from hindsight_api.tracing import _serialize_for_span, get_span_recorder
 
                 finish_reason = _finish_reason_for_choice(first_choice)
@@ -1497,6 +1498,7 @@ class OpenAICompatibleLLM(LLMInterface):
                     error=None,
                     cached_tokens=cached_tokens,
                     thoughts_tokens=thoughts_tokens,
+                    **openai_compatible_usage_kwargs(self.provider, self.base_url, response),  # fork: cost-accounting
                 )
 
                 # Log slow calls
@@ -1830,6 +1832,7 @@ class OpenAICompatibleLLM(LLMInterface):
                 )
 
                 # Record OpenTelemetry span
+                from hindsight_api.engine.llm_cost import openai_compatible_usage_kwargs  # fork: cost-accounting
                 from hindsight_api.tracing import get_span_recorder
 
                 span_recorder = get_span_recorder()
@@ -1853,6 +1856,7 @@ class OpenAICompatibleLLM(LLMInterface):
                     tool_calls=tool_calls_dict,
                     cached_tokens=cached_tokens,
                     thoughts_tokens=thoughts_tokens,
+                    **openai_compatible_usage_kwargs(self.provider, self.base_url, response),  # fork: cost-accounting
                 )
 
                 return LLMToolCallResult(

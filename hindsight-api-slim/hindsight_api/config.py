@@ -5520,3 +5520,9 @@ def clear_config_cache() -> None:
 def reranker_routing_env() -> dict[str, str]:
     """Raw HINDSIGHT_API_RERANKER_* values for the fork's lane routing; parsed and validated in engine/reranker_routing.py."""
     return {k: v for k, v in os.environ.items() if k.startswith("HINDSIGHT_API_RERANKER_")}
+
+
+# fork: cost-accounting
+def llm_cost_env() -> dict[str, str]:
+    """Raw HINDSIGHT_API_LLM_COST_* values; parsed and validated in engine/llm_cost.py."""
+    return {k: v for k, v in os.environ.items() if k.startswith("HINDSIGHT_API_LLM_COST_")}
