@@ -81,6 +81,7 @@ dependencies = [
     # refuses it and `uv pip check` fails). Every release from 1.95.1 on ships
     # macOS arm64/x86_64 wheels, so one floor now serves every platform.
     "litellm>=1.95.1",
+    "genai-prices>=0.1.12,<0.2",  # fork: cost-accounting
     "markitdown[pdf,docx,pptx,xlsx,xls]>=0.1.4", # File to markdown conversion
     "obstore>=0.4.0", # S3/GCS/Azure object storage client (Rust-backed)
     "winloop>=0.1.0; sys_platform == 'win32'",

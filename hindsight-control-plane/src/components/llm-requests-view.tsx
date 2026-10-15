@@ -28,6 +28,7 @@ import { ChevronLeft, ChevronRight, CheckCircle, RefreshCw, XCircle } from "luci
 import { Spinner } from "@/components/ui/spinner";
 import { ToneChip, type ChipTone } from "@/components/ui/facet-chip";
 import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { LLMCostPanel, LLMCallCost } from "@/components/fork/llm-cost-panel"; // fork: cost-accounting
 
 type TranslateFn = (key: string) => string;
 
@@ -420,6 +421,7 @@ function SpanDetails({ entry, t }: { entry: LLMRequestEntry; t: TranslateFn }) {
           </div>
         )
       )}
+      {/* fork: cost-accounting */ <LLMCallCost entry={entry} />}
 
       <div className="border-t border-border pt-3 space-y-1 text-sm">
         <div>
@@ -1063,6 +1065,7 @@ export function LLMRequestsView() {
     <div className="space-y-6">
       {/* Chart */}
       <LLMRequestChart bankId={currentBank} />
+      {/* fork: cost-accounting */ <LLMCostPanel bankId={currentBank} />}
 
       {/* Filters */}
       <div className="flex items-center gap-3 flex-wrap">

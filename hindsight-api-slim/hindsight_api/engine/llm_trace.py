@@ -758,6 +758,9 @@ class LLMTraceRecorder:
             llm_info["tool_calls"] = [tc.get("name", "") for tc in tool_calls]
         if input_count is not None:
             llm_info["input_count"] = input_count
+        from .llm_cost import trace_usage_info  # fork: cost-accounting
+
+        llm_info.update(trace_usage_info(_extra))  # fork: cost-accounting
 
         record = LLMRequestRecord(
             provider=provider,
