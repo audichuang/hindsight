@@ -10,6 +10,7 @@ Uses hierarchical retrieval:
 import asyncio
 import json
 import logging
+import math
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -45,6 +46,7 @@ from .prompts import (
     build_system_prompt_for_tools,
     split_context_history,
 )
+from .request_size import RequestSizer
 from .structured_doc import (
     CanonicalDocument,
     DocumentSectionsInvalidError,
@@ -732,6 +734,9 @@ async def _run_reflect_agent_inner(
     )
     # Build set of enabled tool names to guard against LLM hallucinating disabled tool calls
     enabled_tools: frozenset[str] = frozenset(t["function"]["name"] for t in tools if t.get("type") == "function")
+    # Every comparison against max_context_tokens goes through this: the local message
+    # count alone misses the tool definitions and the provider's tokenizer gap.
+    request_sizer = RequestSizer(tools)
 
     # Build initial messages (directives are injected into system prompt at START and END)
     system_prompt = build_system_prompt_for_tools(
@@ -986,6 +991,10 @@ async def _run_reflect_agent_inner(
             },
         ]
 
+    # Set by _ask_for_done when it declined to send because the request would exceed
+    # the budget, so _finish can say so instead of blaming the model.
+    done_budget_skip: str | None = None
+
     async def _ask_for_done(feedback: "Sequence[dict[str, Any]]" = ()) -> "LLMToolCallResult | None":
         """Ask for the answer as a ``done`` call, in the conversation it was gathered in.
 
@@ -1008,18 +1017,32 @@ async def _run_reflect_agent_inner(
         prompt.
         """
         nonlocal total_input_tokens, total_output_tokens, total_cached_tokens, total_thoughts_tokens
+        nonlocal done_budget_skip
+        done_budget_skip = None
         if not messages or messages[-1].get("role") != "tool":
+            return None
+        request_messages = [
+            *messages,
+            {"role": "user", "content": build_done_request_prompt(query, max_tokens, llm_output_language)},
+            *feedback,
+        ]
+        # The closing call re-sends the whole conversation. It is reached from the last
+        # iteration and from a prose stop, neither of which ran the budget guard on
+        # what this call adds, so it checks for itself.
+        estimated = request_sizer.estimate(_count_messages_tokens(request_messages))
+        if estimated >= max_context_tokens:
+            done_budget_skip = f"~{estimated} >= {max_context_tokens} tokens"
+            logger.warning(
+                f"[REFLECT {reflect_id}] closing done call would send ~{estimated} tokens >= "
+                f"{max_context_tokens} limit; using the standalone prompt."
+            )
             return None
         llm_start = time.perf_counter()
         queue_wait = LLMQueueWait()
         queue_token = set_queue_wait_sink(queue_wait)
         try:
             result = await llm_config.call_with_tools(
-                messages=[
-                    *messages,
-                    {"role": "user", "content": build_done_request_prompt(query, max_tokens, llm_output_language)},
-                    *feedback,
-                ],
+                messages=request_messages,
                 tools=tools,
                 scope="reflect",
                 tool_choice=LLMToolChoice.named("done"),
@@ -1071,7 +1094,14 @@ async def _run_reflect_agent_inner(
                     # A document was already refused on this path. Dropping to
                     # the standalone prose prompt would answer the question by
                     # re-reading markdown the model wrote -- the contract this
-                    # mode exists to avoid -- so the refusal stands.
+                    # mode exists to avoid -- so the refusal stands. That includes a
+                    # re-ask skipped for the context budget: it is a hard ceiling.
+                    if done_budget_skip:
+                        raise DocumentSectionsInvalidError(
+                            [
+                                f"(closing done): re-asking for the document would exceed the context budget ({done_budget_skip})"
+                            ]
+                        )
                     raise DocumentSectionsInvalidError(["(closing done): the model would not re-emit the document"])
                 return await _forced_final_synthesis(iterations_completed)
             try:
@@ -1121,7 +1151,22 @@ async def _run_reflect_agent_inner(
         """
         nonlocal total_input_tokens, total_output_tokens, total_cached_tokens, total_thoughts_tokens
         final_system = build_final_system_prompt(bank_profile.get("mission"), llm_output_language, directives)
-        chunks = split_context_history(context_history, max_context_tokens)
+        # Both budgets below are counted in the local encoding; convert so the prompt
+        # they produce fits max_context_tokens in the provider's own tokens.
+        # The system prompt, the query and the bank profile sit outside the history
+        # budget, so take them off the limit first.
+        overhead = count_prompt_tokens(final_system) + count_prompt_tokens(
+            build_final_prompt(
+                query,
+                [],
+                bank_profile,
+                context,
+                max_tokens=max_tokens,
+                llm_output_language=llm_output_language,
+            )
+        )
+        local_budget = request_sizer.to_local(max_context_tokens - math.ceil(overhead * request_sizer.ratio))
+        chunks = split_context_history(context_history, local_budget)
         # Every call below uses the transport-level cap, never the caller's
         # max_tokens: that is a visible-length target carried as a prompt
         # directive (#3365) and enforced by the rewrite below, and capping the
@@ -1135,7 +1180,7 @@ async def _run_reflect_agent_inner(
                 chunks[0] if chunks else context_history,
                 bank_profile,
                 context,
-                max_context_tokens=max_context_tokens,
+                max_context_tokens=local_budget,
                 max_tokens=max_tokens,
                 llm_output_language=llm_output_language,
             )
@@ -1408,7 +1453,8 @@ async def _run_reflect_agent_inner(
             # letting the model keep going on a conversation with blanked results.
             return await _forced_final_synthesis(iteration + 1)
 
-        estimated_tokens = _count_messages_tokens(messages)
+        local_tokens = _count_messages_tokens(messages)
+        estimated_tokens = request_sizer.estimate(local_tokens)
         if forced_step_pending and estimated_tokens >= max_context_tokens:
             # A big result from an earlier layer (e.g. observations) must not skip a
             # still-required step such as raw-fact recall (#4563). Blank the earlier
@@ -1420,7 +1466,8 @@ async def _run_reflect_agent_inner(
                 if message.get("role") == "tool":
                     messages[index] = {**message, "content": _COMPACTED_TOOL_RESULT}
                     compacted = True
-                    estimated_tokens = _count_messages_tokens(messages)
+                    local_tokens = _count_messages_tokens(messages)
+                    estimated_tokens = request_sizer.estimate(local_tokens)
 
         # Proactive context-window guard: if accumulated messages would exceed the
         # configured token budget, bail out early and synthesize from what we have.
@@ -1540,6 +1587,7 @@ async def _run_reflect_agent_inner(
                 llm_duration = int((time.perf_counter() - llm_start) * 1000)
                 queued_ms = int(queue_wait.seconds * 1000)
                 consecutive_errors = 0
+                request_sizer.observe(local_tokens, result.input_tokens)
                 total_input_tokens += result.input_tokens
                 total_output_tokens += result.output_tokens
                 total_cached_tokens += getattr(result, "cached_tokens", 0) or 0
@@ -1902,7 +1950,7 @@ async def _run_reflect_agent_inner(
             # the assistant's own tool-call message has landed since, so re-walking every
             # message for a handful of tokens is not worth a second tokenization pass.
             call_ceiling = _resolve_tool_arg_ceiling(
-                max_context_tokens - estimated_tokens,
+                request_sizer.to_local(max_context_tokens - estimated_tokens),
                 len(other_tools),
             )
 
