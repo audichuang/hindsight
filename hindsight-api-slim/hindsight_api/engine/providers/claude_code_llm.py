@@ -175,6 +175,40 @@ def _result_error(message: Any) -> Exception:
     return RuntimeError(text)
 
 
+def _count_in(mapping: dict, key: str) -> int:
+    value = mapping.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _usage_from_sdk_usage(usage: object) -> LLMResponseUsage | None:
+    """Fold an Agent SDK usage dict (Anthropic field names) into LLMResponseUsage.
+
+    Returns None unless ``usage`` is a dict whose ``input_tokens`` is a real int,
+    so the caller falls back to the char/4 estimate. Other fields that are not
+    real ints count as 0.
+    """
+    if not isinstance(usage, dict):
+        return None
+    input_tokens = usage.get("input_tokens")
+    if not isinstance(input_tokens, int) or isinstance(input_tokens, bool):
+        return None
+
+    def _count(key: str) -> int:
+        return _count_in(usage, key)
+
+    cache_read = _count("cache_read_input_tokens")
+    # The total, or the TTL breakdown when that is larger (a missing total must not drop the nested writes).
+    creation = usage.get("cache_creation")
+    creation = creation if isinstance(creation, dict) else {}
+    ttl_writes = _count_in(creation, "ephemeral_5m_input_tokens") + _count_in(creation, "ephemeral_1h_input_tokens")
+    cache_write = max(_count("cache_creation_input_tokens"), ttl_writes)
+    return LLMResponseUsage(
+        input_tokens=input_tokens + cache_write + cache_read,
+        output_tokens=_count("output_tokens"),
+        cached_tokens=cache_read,
+    )
+
+
 class ClaudeCodeLLM(LLMInterface):
     """
     LLM provider using Claude Code authentication.
@@ -385,6 +419,7 @@ class ClaudeCodeLLM(LLMInterface):
             try:
                 # Collect streaming response
                 full_text = ""
+                raw_usage: dict | None = None
 
                 async with attempt_context() if attempt_context is not None else nullcontext():
                     set_stage(f"llm.claude_code.{scope}.attempt={attempt + 1}/{max_retries + 1}")
@@ -393,21 +428,33 @@ class ClaudeCodeLLM(LLMInterface):
                             for block in message.content:
                                 if isinstance(block, TextBlock):
                                     full_text += block.text
+                            u = getattr(message, "usage", None)
+                            if isinstance(u, dict):
+                                raw_usage = u
                         elif isinstance(message, ResultMessage) and message.is_error:
+                            # Keep the real counts (e.g. a quota error) for the error trace.
+                            stashed = _usage_from_sdk_usage(getattr(message, "usage", None))
+                            if stashed is not None:
+                                stash_response_usage(stashed)
                             # Surface the CLI's actual error text (e.g. quota
                             # exhaustion) instead of the SDK's subtype-based
                             # fallback exception (issue #2702).
                             raise _result_error(message)
+                        elif isinstance(message, ResultMessage):
+                            u = getattr(message, "usage", None)
+                            if isinstance(u, dict):
+                                raw_usage = u
 
-                # The Claude Agent SDK doesn't report exact counts; stash the same
-                # char/4 estimate the success path traces so a later parse/validate
-                # failure records consistent (estimated) tokens, not zero (#2387).
-                stash_response_usage(
-                    LLMResponseUsage(
+                # Prefer the SDK's real usage; fall back to the char/4 estimate, which
+                # the SDK does not always report (#2387 keeps failure traces consistent).
+                real_usage = _usage_from_sdk_usage(raw_usage)
+                if real_usage is None:
+                    raw_usage = None  # fork: cost-accounting (None marks the estimate for the cost hook)
+                    real_usage = LLMResponseUsage(
                         input_tokens=sum(len(m.get("content", "")) for m in messages) // 4,
                         output_tokens=len(full_text) // 4,
                     )
-                )
+                stash_response_usage(real_usage)
 
                 # Handle structured output
                 if response_format is not None:
@@ -442,23 +489,20 @@ class ClaudeCodeLLM(LLMInterface):
                 duration = time.time() - start_time
                 metrics = get_metrics_collector()
 
-                # Estimate token usage (Claude Agent SDK doesn't report exact counts)
-                # Use character count / 4 as rough estimate (1 token ≈ 4 characters)
-                estimated_input = sum(len(m.get("content", "")) for m in messages) // 4
-                estimated_output = len(full_text) // 4
-
                 metrics.record_llm_call(
                     provider=self.provider,
                     model=self.model,
                     scope=scope,
                     duration=duration,
-                    input_tokens=estimated_input,
-                    output_tokens=estimated_output,
+                    input_tokens=real_usage.input_tokens,
+                    output_tokens=real_usage.output_tokens,
+                    cached_input_tokens=real_usage.cached_tokens,
                     success=True,
                 )
 
                 # Record trace span
                 try:
+                    from hindsight_api.engine.llm_cost import claude_code_usage_kwargs  # fork: cost-accounting
                     from hindsight_api.tracing import _serialize_for_span, get_span_recorder
 
                     span_recorder = get_span_recorder()
@@ -468,11 +512,13 @@ class ClaudeCodeLLM(LLMInterface):
                         scope=scope,
                         messages=messages,
                         response_content=_serialize_for_span(result),
-                        input_tokens=estimated_input,
-                        output_tokens=estimated_output,
+                        input_tokens=real_usage.input_tokens,
+                        output_tokens=real_usage.output_tokens,
+                        cached_tokens=real_usage.cached_tokens,
                         duration=duration,
                         finish_reason=None,
                         error=None,
+                        **claude_code_usage_kwargs(raw_usage),  # fork: cost-accounting
                     )
                 except Exception as span_error:
                     # Tracing must remain best-effort, but expose instrumentation
@@ -486,9 +532,10 @@ class ClaudeCodeLLM(LLMInterface):
                     )
 
                 token_usage = TokenUsage(
-                    input_tokens=estimated_input,
-                    output_tokens=estimated_output,
-                    total_tokens=estimated_input + estimated_output,
+                    input_tokens=real_usage.input_tokens,
+                    output_tokens=real_usage.output_tokens,
+                    total_tokens=real_usage.input_tokens + real_usage.output_tokens,
+                    cached_tokens=real_usage.cached_tokens,
                 )
                 return LLMCallResult(content=result, usage=token_usage)
 
@@ -714,6 +761,7 @@ class ClaudeCodeLLM(LLMInterface):
             try:
                 full_text = ""
                 tool_calls: list[LLMToolCall] = []
+                raw_usage: dict | None = None
 
                 async with attempt_context() if attempt_context is not None else nullcontext():
                     set_stage(f"llm.claude_code.tools.attempt={attempt + 1}/{max_retries + 1}")
@@ -743,6 +791,9 @@ class ClaudeCodeLLM(LLMInterface):
                                                 arguments=block.input,
                                             )
                                         )
+                                u = getattr(message, "usage", None)
+                                if isinstance(u, dict):
+                                    raw_usage = u
                                 if tool_calls:
                                     # This round proposed tool call(s). Stop consuming the
                                     # stream so the SDK does not run another turn against our
@@ -757,29 +808,43 @@ class ClaudeCodeLLM(LLMInterface):
                                 # above and break before reaching this branch. Only a genuine
                                 # error with nothing to return should surface (issue #2702).
                                 if not tool_calls:
+                                    stashed = _usage_from_sdk_usage(getattr(message, "usage", None))
+                                    if stashed is not None:
+                                        stash_response_usage(stashed)
                                     raise _result_error(message)
+                            elif isinstance(message, ResultMessage):
+                                u = getattr(message, "usage", None)
+                                if isinstance(u, dict):
+                                    raw_usage = u
+
+                # Prefer the SDK's real usage; fall back to the char/4 estimate.
+                real_usage = _usage_from_sdk_usage(raw_usage)
+                if real_usage is None:
+                    raw_usage = None  # fork: cost-accounting (None marks the estimate for the cost hook)
+                    real_usage = LLMResponseUsage(
+                        input_tokens=sum(len(m.get("content", "")) for m in messages) // 4,
+                        output_tokens=len(full_text) // 4,
+                    )
 
                 # Record metrics
                 duration = time.time() - start_time
                 metrics = get_metrics_collector()
-
-                # Estimate token usage (Claude Agent SDK doesn't report exact counts)
-                estimated_input = sum(len(m.get("content", "")) for m in messages) // 4
-                estimated_output = len(full_text) // 4
 
                 metrics.record_llm_call(
                     provider=self.provider,
                     model=self.model,
                     scope=scope,
                     duration=duration,
-                    input_tokens=estimated_input,
-                    output_tokens=estimated_output,
+                    input_tokens=real_usage.input_tokens,
+                    output_tokens=real_usage.output_tokens,
+                    cached_input_tokens=real_usage.cached_tokens,
                     success=True,
                 )
 
                 # Record trace span. The wrapper records only failed calls, so without
                 # this a successful tool round never reaches the traces (#5381).
                 try:
+                    from hindsight_api.engine.llm_cost import claude_code_usage_kwargs  # fork: cost-accounting
                     from hindsight_api.tracing import get_span_recorder
 
                     get_span_recorder().record_llm_call(
@@ -788,12 +853,14 @@ class ClaudeCodeLLM(LLMInterface):
                         scope=scope,
                         messages=messages,
                         response_content=full_text or None,
-                        input_tokens=estimated_input,
-                        output_tokens=estimated_output,
+                        input_tokens=real_usage.input_tokens,
+                        output_tokens=real_usage.output_tokens,
+                        cached_tokens=real_usage.cached_tokens,
                         duration=duration,
                         finish_reason="tool_calls" if tool_calls else "stop",
                         error=None,
                         tool_calls=[{"id": c.id, "name": c.name, "arguments": c.arguments} for c in tool_calls] or None,
+                        **claude_code_usage_kwargs(raw_usage),  # fork: cost-accounting
                     )
                 except Exception as span_error:
                     logger.debug("Claude Code span recording failed: %s", span_error, exc_info=True)
@@ -808,8 +875,9 @@ class ClaudeCodeLLM(LLMInterface):
                     content=full_text if full_text else None,
                     tool_calls=tool_calls,
                     finish_reason="tool_calls" if tool_calls else "stop",
-                    input_tokens=estimated_input,
-                    output_tokens=estimated_output,
+                    input_tokens=real_usage.input_tokens,
+                    output_tokens=real_usage.output_tokens,
+                    cached_tokens=real_usage.cached_tokens,
                 )
 
             except (ProviderContentPolicyError, ProviderRateLimitResetError):

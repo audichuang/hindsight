@@ -15,6 +15,7 @@ interface Features {
   audit_log: boolean;
   llm_trace: boolean;
   store_document_text: boolean;
+  llm_cost: boolean; // fork: cost-accounting
 }
 
 interface FeaturesContextType {
@@ -37,6 +38,7 @@ const defaultFeatures: Features = {
   // Default to true so the "text not stored" warning only appears when the
   // server explicitly reports text storage is disabled (and not on fetch errors).
   store_document_text: true,
+  llm_cost: false, // fork: cost-accounting
 };
 
 const FeaturesContext = createContext<FeaturesContextType | undefined>(undefined);
