@@ -3704,6 +3704,10 @@ async def _consolidate_batch_with_llm(
         fact_ids=[str(m["id"]) for m in memories],
         supports_max_items=config.llm_supports_max_items,
     )
+    # Local import keeps the fork out of upstream's import block.  # fork: consolidation-cache
+    from .cacheable_schema import cacheable_response_model  # fork: consolidation-cache
+
+    response_model = cacheable_response_model(response_model, llm_config, config)  # fork: consolidation-cache
 
     max_attempts = config.consolidation_max_attempts
     inner_max_retries = config.consolidation_llm_max_retries
