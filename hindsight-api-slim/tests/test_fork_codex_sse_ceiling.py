@@ -1,12 +1,15 @@
-"""A long but legitimate Codex reply is not abandoned as a runaway.
+"""The Codex stream ceiling keeps long legitimate replies and still cuts off runaways by size.
 
-The stream guard counts the raw SSE body, and each delta event wraps about one token in
-a few hundred characters of envelope (inferred from the reference deployment, not
-measured on the wire). At the old 4 MiB ceiling a reply was cut off at roughly 13-17k
-output tokens, which split-synthesis map calls of a mental-model refresh reach in normal
-operation: in one week no successful map call there went above ~13.6k output tokens, and
-32 of ~1100 failed as ``CodexRunawayStreamError``. ``CodexLLM`` never sends
-``max_completion_tokens``, so nothing else bounds such a reply.
+The stream guard counts the raw SSE body. Measured on the ChatGPT backend, each output
+token arrives as one delta event of about 287 characters, so the old 4 MiB ceiling cut a
+reply off at ~14.6k output tokens, which split-synthesis map calls of a mental-model
+refresh reach in normal operation: in one week no successful map call there went above
+~13.6k output tokens, and 32 of ~1100 failed as ``CodexRunawayStreamError``. ``CodexLLM``
+never sends ``max_completion_tokens``, so nothing else bounds such a reply.
+
+The ceiling must also stay low enough to trip before the per-attempt deadline at the
+observed 43-66 tokens/s: a 16 MiB ceiling (~58k deltas) took 880-1350 s to fill, past
+the refresh lane's 900 s deadline, so a runaway ran to the deadline on every attempt.
 """
 
 import json
@@ -14,7 +17,8 @@ from unittest.mock import patch
 
 import pytest
 
-from hindsight_api.engine.providers.codex_llm import CodexLLM
+from hindsight_api.engine.providers import codex_llm
+from hindsight_api.engine.providers.codex_llm import CodexLLM, CodexRunawayStreamError
 from tests.codex_stream_stub import CodexReply, stub_codex_stream
 
 pytestmark = pytest.mark.asyncio
@@ -31,10 +35,11 @@ _ENVELOPE = {
     "obfuscation": "AbCdEfGhIjKlMnOpQrStUv",
 }
 _TOKENS = 20_000  # a long claims list, above the old cut-off and well under the new one
+_RUNAWAY_DELTAS = 30_500  # just past the ceiling (a small unread tail), well under a 16 MiB one
+_DELTA_EVENT = "event: response.text.delta\ndata: " + json.dumps({**_ENVELOPE, "delta": " tok"}) + "\n\n"
 
 
 def _long_reply() -> str:
-    event = "event: response.text.delta\ndata: " + json.dumps({**_ENVELOPE, "delta": " tok"}) + "\n\n"
     completed = (
         "event: response.completed\ndata: "
         + json.dumps(
@@ -42,7 +47,7 @@ def _long_reply() -> str:
         )
         + "\n\n"
     )
-    return event * _TOKENS + completed + "data: [DONE]\n\n"
+    return _DELTA_EVENT * _TOKENS + completed + "data: [DONE]\n\n"
 
 
 def _build_llm() -> CodexLLM:
@@ -62,7 +67,7 @@ async def test_a_20k_token_reply_completes():
     llm = _build_llm()
     body = _long_reply()
     # The reply is bigger than the old ceiling; it is a real reply, not a runaway.
-    assert len(body) > 4 * 1024 * 1024
+    assert 4 * 1024 * 1024 < len(body) < 8 * 1024 * 1024
     try:
         with stub_codex_stream(llm, CodexReply(text=body)):
             result = await llm.call(messages=[{"role": "user", "content": "list the claims"}], max_retries=0)
@@ -70,3 +75,22 @@ async def test_a_20k_token_reply_completes():
         assert result.usage.output_tokens == _TOKENS
     finally:
         await llm.cleanup()
+
+
+async def test_a_runaway_is_cut_off_by_size_before_16_mib():
+    llm = _build_llm()
+    # A stream that never completes. Under a 16 MiB ceiling it would end on its own and
+    # be returned as a reply; it has to be abandoned by size instead.
+    body = _DELTA_EVENT * _RUNAWAY_DELTAS
+    assert 8 * 1024 * 1024 < len(body) < 16 * 1024 * 1024
+    try:
+        with stub_codex_stream(llm, CodexReply(text=body)), pytest.raises(CodexRunawayStreamError):
+            await llm.call(messages=[{"role": "user", "content": "list the claims"}], max_retries=0)
+    finally:
+        await llm.cleanup()
+
+
+def test_the_ceiling_trips_before_the_refresh_deadline_at_observed_speed():
+    # ~287 characters per delta event and 43 output tokens/s (the p50 of successful long
+    # refresh calls) must fill the ceiling within the 900 s per-attempt deadline.
+    assert codex_llm._MAX_SSE_BODY_CHARS / 287 / 43 < 900
