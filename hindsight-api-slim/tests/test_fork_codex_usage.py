@@ -318,17 +318,6 @@ def test_usage_parser_clamps_visible_output_at_zero():
 # --- cache write tokens (input_tokens_details.cache_write_tokens) -----------------------------------
 
 
-def test_usage_model_reads_cache_write_tokens():
-    from hindsight_api.engine.providers.codex_llm import _CodexUsage
-
-    usage = _CodexUsage.model_validate(
-        {"input_tokens": 30000, "input_tokens_details": {"cached_tokens": 10000, "cache_write_tokens": 20000}}
-    )
-    assert usage.input_tokens == 30000
-    assert usage.input_tokens_details.cached_tokens == 10000
-    assert usage.input_tokens_details.cache_write_tokens == 20000
-
-
 def test_usage_parser_keeps_input_total_and_cached_with_cache_writes():
     from hindsight_api.engine.providers.codex_llm import _usage_from_codex_completed
 
@@ -352,10 +341,37 @@ def test_usage_parser_keeps_input_total_and_cached_with_cache_writes():
     )
 
 
-@pytest.mark.parametrize("bad", ["20000", None, True, False, [20000]])
-def test_cache_write_tokens_non_int_reads_zero(bad):
-    from hindsight_api.engine.providers.codex_llm import _CodexUsage
+@pytest.mark.parametrize(
+    "details, expected",
+    [
+        ({"cached_tokens": 10, "cache_write_tokens": 0}, 0),
+        ({"cached_tokens": 10, "cache_write_tokens": 7}, 7),
+        ({"cached_tokens": 10}, None),
+        ({"cached_tokens": 10, "cache_write_tokens": "7"}, None),
+    ],
+)
+def test_cost_hook_tells_zero_cache_writes_from_none_reported(details, expected):
+    from hindsight_api.engine.llm_cost import _codex_cache_writes
 
-    usage = _CodexUsage.model_validate({"input_tokens_details": {"cached_tokens": 10000, "cache_write_tokens": bad}})
-    assert usage.input_tokens_details.cache_write_tokens == 0
-    assert usage.input_tokens_details.cached_tokens == 10000
+    event = {"type": "response.completed", "response": {"usage": {"input_tokens": 50, "input_tokens_details": details}}}
+    assert _codex_cache_writes(event) == expected
+    assert _codex_cache_writes({"response": "not-a-dict"}) is None
+
+
+def test_cost_hook_reads_the_explicit_zero_the_chatgpt_backend_sends():
+    """Shape of a real ``response.completed`` usage block from the ChatGPT backend (gpt-6.1-sol, 2026-10-20).
+
+    The backend sends ``cache_write_tokens: 0`` explicitly, also on the call that created the cache, so the
+    row records a reported zero (a breakdown), not a missing one.
+    """
+    from hindsight_api.engine.llm_cost import _codex_cache_writes
+
+    usage = {
+        "input_tokens": 6841,
+        "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+        "output_tokens": 5,
+        "output_tokens_details": {"reasoning_tokens": 0},
+        "total_tokens": 6846,
+        "attribution": {"request_fields": {"instructions": {"input_tokens": 6826, "cache_write_tokens": 0}}},
+    }
+    assert _codex_cache_writes({"type": "response.completed", "response": {"usage": usage}}) == 0
