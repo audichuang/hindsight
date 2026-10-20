@@ -13,13 +13,18 @@ Which events count: every ``event: response.<...>.delta`` line. In the Responses
 call arguments, reasoning summary or reasoning text, custom tool input), and every one of them
 grows without bound when generation runs away: a tool call whose arguments never close is as
 much a runaway as a text reply that never ends. Non-generating events (``*.added``, ``*.done``,
-``response.created``/``in_progress``/``completed``) are not counted. It is the same definition
-the attempt meter of ``llm_attempt_usage`` uses for its output estimate, so a cap of N stops an
-attempt the meter would have counted at N+ output tokens. Reasoning tokens are not streamed (the
-backend sends them encrypted at the end), so neither counter sees them.
+``response.created``/``in_progress``/``completed``) are not counted. Tool-argument deltas were
+measured at one per output token too. Reasoning tokens are not streamed (the backend sends them
+encrypted at the end), so neither this cap nor the body ceiling sees them.
 
-The cap is independent of ``HINDSIGHT_API_LLM_COST_ENABLED``: the attempt meter counts only for
-cost accounting, and a safety bound must not depend on that flag.
+Lines are split and matched by ``sse_delta_scan``, the scanner the attempt meter of
+``llm_attempt_usage`` also uses, so a cap of N stops an attempt the meter counts at N+1 output
+tokens or more. The cap keeps its own scanner instance because the meter counts only with
+``HINDSIGHT_API_LLM_COST_ENABLED`` on, and a safety bound must not depend on that flag.
+
+The error is the body ceiling's ``CodexRunawayStreamError``, so it is handled as that one is:
+``call()`` retries it up to ``max_retries``; ``call_with_tools`` raises it at once (upstream retries
+only auth failures there) and the reflect agent moves on to its next iteration.
 
 Inert by default: with ``HINDSIGHT_API_CODEX_MAX_OUTPUT_DELTAS`` unset (or empty), ``feed`` returns
 at once and the stream is handled exactly as upstream handles it.
@@ -30,10 +35,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ...config import ENV_CODEX_MAX_OUTPUT_DELTAS, codex_output_cap_env
+from ..sse_delta_scan import DeltaEventScanner
 from .codex_llm import CodexRunawayStreamError
-
-# An event-name line is far shorter than this; a longer partial line only needs its start.
-_LINE_PREFIX_KEPT = 256
 
 
 def parse_max_output_deltas(raw: str | None) -> int | None:
@@ -53,27 +56,24 @@ def parse_max_output_deltas(raw: str | None) -> int | None:
 class _OutputDeltaCounter:
     """Counts the output delta events of one attempt from the raw body and stops it past the cap.
 
-    Fed every decoded chunk as it arrives. Lines are rejoined across chunk boundaries, so an
-    event-name line split between two chunks is counted once. The whole chunk is counted before
-    the check, so the stream is abandoned at the chunk that crosses the cap (the parser never
-    sees that chunk's lines).
+    Fed every decoded chunk as it arrives. Lines are split and matched by ``sse_delta_scan``, the
+    scanner the attempt meter also uses, with the line-break rule of the stream parser (a lone
+    ``\\r`` ends a line), so a body cannot reach the parser in lines the counter does not see. The
+    whole chunk is counted before the check, so the stream is abandoned at the chunk that crosses
+    the cap (the parser never sees that chunk's lines).
     """
 
-    __slots__ = ("_cap", "_carry", "_count")
+    __slots__ = ("_cap", "_count", "_scanner")
 
     def __init__(self, cap: int | None) -> None:
         self._cap = cap
-        self._carry = ""
         self._count = 0
+        self._scanner = DeltaEventScanner()
 
     def feed(self, text: str) -> None:
         if self._cap is None:
             return
-        lines = (self._carry + text).split("\n")
-        self._carry = lines.pop()[:_LINE_PREFIX_KEPT]
-        for line in lines:
-            if line.startswith("event: response.") and line.rstrip().endswith(".delta"):
-                self._count += 1
+        self._count += self._scanner.feed(text)
         if self._count > self._cap:
             raise CodexRunawayStreamError(
                 f"Codex response exceeded {self._cap} output delta events ({ENV_CODEX_MAX_OUTPUT_DELTAS}) "

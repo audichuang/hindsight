@@ -36,6 +36,8 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from .sse_delta_scan import DeltaEventScanner
+
 logger = logging.getLogger(__name__)
 
 
@@ -102,31 +104,24 @@ def close_call_ledger() -> None:
 # --- attempts (hooked into codex_llm._iter_sse_lines) --------------------------------------------
 
 
-_LINE_PREFIX_KEPT = 256  # an event-name line is far shorter; a longer partial line only needs its start
-
-
 class AttemptMeter:
     """Counts the delta events of one Codex attempt from the raw body. Inert when no ledger is open.
 
     Fed every decoded chunk as it arrives, before the size guard can abandon the stream, so the
-    chunk that trips the guard is counted too. A delta event is announced by an
-    ``event: response.<...>.delta`` line; lines are rejoined across chunk boundaries.
+    chunk that trips the guard is counted too. Lines are split and matched by the scanner the
+    output cap uses (``sse_delta_scan``), so both count the same events.
     """
 
-    __slots__ = ("_attempt", "_carry")
+    __slots__ = ("_attempt", "_scanner")
 
     def __init__(self, attempt: _Attempt | None) -> None:
         self._attempt = attempt
-        self._carry = ""
+        self._scanner = DeltaEventScanner()
 
     def feed(self, text: str) -> None:
         if self._attempt is None:
             return
-        lines = (self._carry + text).split("\n")
-        self._carry = lines.pop()[:_LINE_PREFIX_KEPT]
-        for line in lines:
-            if line.startswith("event: ") and line.rstrip().endswith(".delta"):
-                self._attempt.delta_events += 1
+        self._attempt.delta_events += self._scanner.feed(text)
 
 
 def begin_codex_attempt() -> AttemptMeter:

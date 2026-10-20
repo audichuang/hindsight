@@ -52,7 +52,7 @@ Each line is marked `# fork: attempt-usage`.
 | A5 | same file, `LLMTraceRecorder.record_llm_call` | the decorator `@fold_attempt_usage`. Every caller passes keywords (the tracing fan-out does); a positional call is passed through unfolded |
 | A6 | `hindsight-api-slim/hindsight_api/engine/providers/codex_llm.py`, `_iter_sse_lines` | a local import of `begin_codex_attempt`, `attempt = begin_codex_attempt()` before the decoder, and `attempt.feed(text)` right after `seen_chars += len(text)` |
 
-Fork-owned files: `hindsight-api-slim/hindsight_api/engine/llm_attempt_usage.py`, `hindsight-api-slim/tests/test_fork_attempt_usage.py` (behaviour and hook-existence tests), and this file.
+Fork-owned files: `hindsight-api-slim/hindsight_api/engine/llm_attempt_usage.py`, `hindsight-api-slim/hindsight_api/engine/sse_delta_scan.py` (shared with `FORK-CODEX-OUTPUT-CAP.md`), `hindsight-api-slim/tests/test_fork_attempt_usage.py` (behaviour and hook-existence tests), and this file.
 
 ## Related fix: the Codex stream ceiling
 
@@ -63,7 +63,7 @@ Two commits with no marker (an upstream defect), `fix(codex): stop abandoning lo
 - The ceiling must also trip before the per-attempt deadline. The deployment streams long refresh replies at 43-66 output tokens/s (p50-p95), so 8 MiB fills in about 440-680 s, inside the refresh lane's 900 s deadline. The first commit's 16 MiB (~58k tokens) needed 880-1350 s: the deadline, not the size, ended nearly every runaway, and a runaway call cost up to (retries + 1) x timeout plus backoff (2 x 900 s + 30 s with the deployment's `MENTAL_MODEL_REFRESH_LLM_MAX_RETRIES=1`) instead of 400-840 s. A runaway slower than ~32 tokens/s still reaches the deadline first.
 - Map calls of one refresh run concurrently (`asyncio.gather`), so two runaway maps overlap in time rather than adding up.
 
-The delta-count cap is a separate patch, `FORK-CODEX-OUTPUT-CAP.md` (`HINDSIGHT_API_CODEX_MAX_OUTPUT_DELTAS`, off by default). It has its own counter in `_iter_sse_lines`, because the attempt meter here counts only with the cost flag on and a safety bound must not depend on it. Both count the same events in practice (the cap requires the `response.` prefix, the meter any `event: ...delta`). The order inside a chunk is: attempt meter, then the 8 MiB body ceiling, then the delta cap, so the meter counts the chunk that trips either guard. The delta cap is meant to trip first. The recommended 25000 is below the ~29k deltas that 8 MiB holds, so the body ceiling remains the second guard, for a backend whose envelope or event names change.
+The delta-count cap is a separate patch, `FORK-CODEX-OUTPUT-CAP.md` (`HINDSIGHT_API_CODEX_MAX_OUTPUT_DELTAS`, off by default). It has its own counter in `_iter_sse_lines`, because the attempt meter here counts only with the cost flag on and a safety bound must not depend on it. Both count with the same scanner, `engine/sse_delta_scan.py` (every `event: response.<...>.delta` line, lines split as `_iter_sse_lines` splits them, a lone `\r` included). The order inside a chunk is: attempt meter, then the 8 MiB body ceiling, then the delta cap, so the meter counts the chunk that trips either guard. The delta cap is meant to trip first. The recommended 25000 is below the ~29k deltas that 8 MiB holds, so the body ceiling remains the second guard, for a backend whose envelope or event names change.
 
 ### Not done
 

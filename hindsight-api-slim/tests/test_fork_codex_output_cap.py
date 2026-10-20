@@ -14,7 +14,7 @@ import pytest
 from hindsight_api.engine.providers import codex_output_cap
 from hindsight_api.engine.providers.codex_llm import CodexLLM, CodexRunawayStreamError
 from hindsight_api.engine.providers.codex_output_cap import parse_max_output_deltas
-from tests.codex_stream_stub import CodexReply, stub_codex_stream
+from tests.codex_stream_stub import CodexReply, stub_codex_stream, stub_codex_stream_with
 
 ENV = "HINDSIGHT_API_CODEX_MAX_OUTPUT_DELTAS"
 _MESSAGES = [{"role": "user", "content": "list the claims"}]
@@ -193,6 +193,46 @@ def test_the_cap_does_not_depend_on_the_cost_flag(monkeypatch):
     counter = codex_output_cap.CodexOutputCap(1).begin_attempt()
     with pytest.raises(CodexRunawayStreamError):
         counter.feed(_text_delta(0) + _text_delta(1))
+
+
+def _first_then(first: str, then: str):
+    replies = iter([first])
+    return lambda _url, **_kw: CodexReply(text=next(replies, then))
+
+
+@pytest.mark.asyncio
+async def test_call_retries_a_capped_attempt_and_recovers(monkeypatch):
+    # FORK-CODEX-OUTPUT-CAP.md: call() handles a cap trip as it handles the body ceiling, a
+    # transient error retried with a fresh counter.
+    monkeypatch.setenv(ENV, "50")
+    llm = _build_llm()
+    try:
+        with (
+            patch("asyncio.sleep"),
+            stub_codex_stream_with(llm, _first_then(_text_reply(51), _text_reply(50))) as mock,
+        ):
+            result = await llm.call(messages=_MESSAGES, max_retries=1)
+        assert result.content == "x" * 50
+        assert mock.call_count == 2
+    finally:
+        await llm.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_call_with_tools_raises_a_capped_attempt_at_once(monkeypatch):
+    # FORK-CODEX-OUTPUT-CAP.md: call_with_tools retries only auth failures (upstream), so a cap trip
+    # is raised on the first attempt, as the body ceiling is; the reflect agent's next iteration
+    # is the retry. If upstream adds a runaway retry here, update the document with this test.
+    monkeypatch.setenv(ENV, "50")
+    llm = _build_llm()
+    tools = [{"type": "function", "function": {"name": "search", "parameters": {"type": "object"}}}]
+    try:
+        with stub_codex_stream_with(llm, _first_then(_tool_reply(51), _tool_reply(50))) as mock:
+            with pytest.raises(CodexRunawayStreamError):
+                await llm.call_with_tools(messages=_MESSAGES, tools=tools, max_retries=1)
+        assert mock.call_count == 1
+    finally:
+        await llm.cleanup()
 
 
 # --- hooks -----------------------------------------------------------------------------------------
