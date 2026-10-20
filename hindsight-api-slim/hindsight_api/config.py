@@ -5526,3 +5526,12 @@ def reranker_routing_env() -> dict[str, str]:
 def llm_cost_env() -> dict[str, str]:
     """Raw HINDSIGHT_API_LLM_COST_* values; parsed and validated in engine/llm_cost.py."""
     return {k: v for k, v in os.environ.items() if k.startswith("HINDSIGHT_API_LLM_COST_")}
+
+
+# fork: codex-output-cap
+ENV_CODEX_MAX_OUTPUT_DELTAS = "HINDSIGHT_API_CODEX_MAX_OUTPUT_DELTAS"
+
+
+def codex_output_cap_env() -> str | None:
+    """Raw HINDSIGHT_API_CODEX_MAX_OUTPUT_DELTAS; parsed and validated in engine/providers/codex_output_cap.py."""
+    return os.environ.get(ENV_CODEX_MAX_OUTPUT_DELTAS)
