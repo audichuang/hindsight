@@ -35,7 +35,7 @@ The returned `TokenUsage`, the metrics counters and the OTel spans still carry t
 - **One row per call, not one per attempt.** The control plane and the cost endpoints count calls; extra rows would change their meaning and every upstream consumer of the table.
 - **The ledger rides on the per-call usage reset.** The wrapper calls `set_response_usage(None)` when a call starts and `reset_response_usage` when it ends, so the ledger opens and closes there. No hook goes into `llm_wrapper.py`, whose `call` and `call_with_tools` change often upstream.
 - **Attempts are opened by Codex only**, in `_iter_sse_lines`, which every Codex request streams through (`call` and `call_with_tools`). Other providers stash several times per attempt (claude-code does), so "one stash per attempt" cannot be assumed for them; without an open attempt their stashes are ignored and their rows are unchanged.
-- **Delta events are counted from the raw body** as each chunk arrives, before the size guard can abandon the stream, so the chunk that trips the guard is counted too.
+- **Delta events are counted from the raw body** as each chunk arrives, before the size guard can abandon the stream, so the chunk that trips the guard is counted too. The count comes from the per-attempt scan that also enforces the output cap (`CodexAttemptScan`, `FORK-CODEX-OUTPUT-CAP.md`), so a chunk is split into lines once. `llm_attempt_usage.open_codex_attempt()` only records the attempt; it returns None when no ledger is open, and then nothing is recorded.
 - **A success row is authoritative for its own attempt.** The provider records success from the attempt that succeeded, so the ledger uses the row's counts for that attempt even when the provider did not stash them.
 - **Provider usage is told from the chars/4 fallback by identity.** At stash time the ledger asks `codex_usage_kwargs(usage)` whether this object is the one `note_codex_usage` saw parsed from the stream (H16 of the cost accounting).
 
@@ -50,9 +50,9 @@ Each line is marked `# fork: attempt-usage`.
 | A3 | same file, `stash_response_usage` | `note_stashed_usage(usage)` before the `set` |
 | A4 | same file, `reset_response_usage` | `close_call_ledger()` before the `reset` |
 | A5 | same file, `LLMTraceRecorder.record_llm_call` | the decorator `@fold_attempt_usage`. Every caller passes keywords (the tracing fan-out does); a positional call is passed through unfolded |
-| A6 | `hindsight-api-slim/hindsight_api/engine/providers/codex_llm.py`, `_iter_sse_lines` | a local import of `begin_codex_attempt`, `attempt = begin_codex_attempt()` before the decoder, and `attempt.feed(text)` right after `seen_chars += len(text)` |
+| A6 | `hindsight-api-slim/hindsight_api/engine/providers/codex_llm.py`, `_iter_sse_lines` | shared with the output cap: `attempt = self._fork_attempt_scan()` before the decoder and `attempt.feed(text, seen_chars)` right after `seen_chars += len(text)`, both marked `# fork: codex-output-cap, attempt-usage` (C3 and C4 of `FORK-CODEX-OUTPUT-CAP.md`; the scan is built in `CodexLLM.__init__`, C2) |
 
-Fork-owned files: `hindsight-api-slim/hindsight_api/engine/llm_attempt_usage.py`, `hindsight-api-slim/hindsight_api/engine/sse_delta_scan.py` (shared with `FORK-CODEX-OUTPUT-CAP.md`), `hindsight-api-slim/tests/test_fork_attempt_usage.py` (behaviour and hook-existence tests), and this file.
+Fork-owned files: `hindsight-api-slim/hindsight_api/engine/llm_attempt_usage.py`, `hindsight-api-slim/hindsight_api/engine/providers/codex_output_cap.py` and `hindsight-api-slim/hindsight_api/engine/sse_delta_scan.py` (shared with `FORK-CODEX-OUTPUT-CAP.md`), `hindsight-api-slim/tests/test_fork_attempt_usage.py` (behaviour and hook-existence tests), and this file.
 
 ## The Codex stream ceiling
 
@@ -64,7 +64,7 @@ After each rebase, re-diff `llm_trace.py` (`set_response_usage`, `stash_response
 
 ### Rebasing onto a release that contains upstream #5693
 
-Upstream #5693 (`dcc3ee421`, "report real token usage for Codex, Claude Code and Anthropic") rewrites `codex_llm.py` around `_CodexStreamReply`. On `origin/main` at `c5f585f8f` (which contains #5693), `_iter_sse_lines` and the size guard are unchanged by it: the branch's whole `codex_llm.py` diff (A6 and both ceiling commits) applies with a plain `git apply --check`. What changes is how usage is stashed:
+Upstream #5693 (`dcc3ee421`, "report real token usage for Codex, Claude Code and Anthropic") rewrites `codex_llm.py` around `_CodexStreamReply`. On `origin/main` at `c5f585f8f` (which contains #5693), `_iter_sse_lines` and the size guard are unchanged by it: the branch's whole `codex_llm.py` diff (A6 and the output-cap hooks) applies with a plain `git apply --check`. What changes is how usage is stashed:
 
 - `call()` stashes once per attempt, after the stream is parsed, a new `LLMResponseUsage` copied from `reply.usage` (or the chars/4 fallback when `reply.usage` is None). A runaway still raises before the stash, so the ledger's delta estimate still applies.
 - The usage object that is stashed is no longer the object `_usage_from_completed_event` built. So the identity check in `note_stashed_usage` (through `codex_usage_kwargs`) sees every stash as an estimate unless H16 of the cost accounting is re-anchored to note the stashed object when `reply.usage is not None`: pass the `LLMResponseUsage` given to `stash_response_usage` as the first argument of `note_codex_usage`, and as the second whatever H16's current signature takes (see the H16 row of `FORK-COST-ACCOUNTING.md`). Since the cost-quota fixes that is the raw `response.completed` event, which the stash site of #5693 does not have: `_CodexStreamReply` has to keep it. Without the re-anchor, retried calls that never ran away are marked `estimate`.

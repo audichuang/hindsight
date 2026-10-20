@@ -3,7 +3,7 @@
 ``CodexLLM._iter_sse_lines`` ends a line on ``\\n``, ``\\r\\n`` or a lone ``\\r`` (``str.splitlines``).
 The output cap and the attempt meter first split on ``\\n`` only, so a body with CR-only line ends
 reached the parser intact while neither counted a single delta: the cap could be bypassed and the
-meter's runaway estimate was 0. Both now share ``sse_delta_scan``.
+meter's runaway estimate was 0. Both now read one count per attempt (``CodexAttemptScan``).
 """
 
 import json
@@ -163,12 +163,23 @@ async def test_the_meter_counts_every_line_ending_the_parser_sees(monkeypatch, s
 # --- the shared scanner ----------------------------------------------------------------------------
 
 
-def test_one_scanner_serves_both_counters():
-    # A single definition of "output delta event", so the cap and the cost estimate cannot drift.
-    assert llm_attempt_usage.DeltaEventScanner is DeltaEventScanner
-    from hindsight_api.engine.providers import codex_output_cap
-
-    assert codex_output_cap.DeltaEventScanner is DeltaEventScanner
+@pytest.mark.asyncio
+async def test_one_scan_feeds_the_meter_and_the_cap(monkeypatch):
+    # One count per attempt: the meter records exactly the deltas the cap saw, including the chunk that trips it.
+    monkeypatch.setenv(CAP_ENV, "3")
+    monkeypatch.setenv("HINDSIGHT_API_LLM_COST_ENABLED", "true")
+    clear_config_cache()
+    load_cost_settings.cache_clear()
+    llm = _build_llm()
+    token = llm_trace.set_response_usage(None)
+    try:
+        with pytest.raises(CodexRunawayStreamError):
+            await _drain(llm, [_body(4, "\n")])
+        ledger = llm_attempt_usage._ledger.get()
+        assert ledger is not None
+        assert [a.delta_events for a in ledger.attempts] == [4]
+    finally:
+        llm_trace.reset_response_usage(token)
 
 
 def test_a_crlf_split_between_chunks_counts_once():

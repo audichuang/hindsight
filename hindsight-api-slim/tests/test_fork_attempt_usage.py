@@ -236,12 +236,12 @@ async def test_concurrent_calls_keep_separate_ledgers(cost_on, recorder):
 def test_a_success_row_counts_its_own_attempt_even_without_a_stash(cost_on, recorder):
     """A provider path that records success without stashing (the tool path after upstream #5693)
     must not have its real counts replaced by the delta estimate."""
-    from hindsight_api.engine.llm_attempt_usage import begin_codex_attempt
     from hindsight_api.engine.llm_cost import CallUsage
+    from hindsight_api.engine.providers.codex_output_cap import CodexAttemptScan
 
     token = llm_trace.set_response_usage(None)
     try:
-        begin_codex_attempt().feed("event: response.output_text.delta\ndata: {}\n\n" * 7)
+        CodexAttemptScan(None).feed("event: response.output_text.delta\ndata: {}\n\n" * 7, 0)
         recorder.record_llm_call(
             provider="openai-codex",
             model="gpt-x",
@@ -275,9 +275,10 @@ def test_llm_trace_keeps_the_attempt_usage_hooks():
 
 
 def test_codex_keeps_the_attempt_meter_hooks():
+    # One scan per attempt serves the meter and the output cap (FORK-CODEX-OUTPUT-CAP.md, C3/C4).
     body = inspect.getsource(CodexLLM._iter_sse_lines)
-    assert "attempt = begin_codex_attempt()  # fork: attempt-usage" in body
+    assert "attempt = self._fork_attempt_scan()  # fork: codex-output-cap, attempt-usage" in body
     assert (
-        "            attempt.feed(text)  # fork: attempt-usage\n            if seen_chars > _MAX_SSE_BODY_CHARS:"
-        in body
-    )
+        "            attempt.feed(text, seen_chars)  # fork: codex-output-cap, attempt-usage\n"
+        "            if seen_chars > _MAX_SSE_BODY_CHARS:"
+    ) in body
