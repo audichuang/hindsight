@@ -8,7 +8,7 @@ It is off unless `HINDSIGHT_API_CODEX_MAX_OUTPUT_DELTAS` is set. With it unset, 
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `HINDSIGHT_API_CODEX_MAX_OUTPUT_DELTAS` | Most output delta events one Codex attempt may stream. Server-wide (every Codex lane). A positive integer, parsed as the other integer settings are (`config._parse_optional_positive_int`, Python `int()`: surrounding spaces are allowed). Unset or empty: no cap. Anything else (`0`, `-1`, `25k`, `2.5`, only spaces) fails when a `CodexLLM` is built, which is at startup for every configured Codex lane. | unset |
+| `HINDSIGHT_API_CODEX_MAX_OUTPUT_DELTAS` | Most output delta events one Codex attempt may stream. Server-wide (every Codex lane). A positive integer, parsed as the other integer settings are (`config._parse_optional_positive_int`, Python `int()`: surrounding spaces, a leading `+`, digit underscores and non-ASCII digits are accepted). Unset or empty: no cap. Anything else (`0`, `-1`, `25k`, `2.5`, only spaces) fails when a `CodexLLM` is built, which is at startup for every configured Codex lane. | unset |
 
 A value set on a server with no Codex lane is never parsed, so a typo there goes unnoticed. That is harmless (nothing reads it) and keeps validation in the one hook that already runs for Codex.
 
@@ -79,7 +79,7 @@ Fork-owned files: `hindsight-api-slim/hindsight_api/engine/providers/codex_outpu
 
 ## Maintaining the patch
 
-After each rebase, re-diff `codex_llm.py`: `CodexLLM.__init__` around `_request_timeout`, `_iter_sse_lines` (the chunk loop and the body-ceiling check), that both parsers still iterate `_iter_sse_lines`, that `CodexRunawayStreamError` is still retried by `call()` and raised at once by `call_with_tools` (`test_call_retries_a_capped_attempt_and_recovers`, `test_call_with_tools_raises_a_capped_attempt_at_once`), and the SSE event names. `sse_delta_scan` splits with `str.splitlines` and decides whether a chunk ends a line by `str.splitlines` too, the rule `codex_llm._LINE_BREAK_RE` spells out; if upstream changes how `_iter_sse_lines` splits lines, change the scanner with it. Re-check the 287 characters per delta and the ceiling arithmetic above if the backend's envelope changes.
+After each rebase, re-diff `codex_llm.py`: `CodexLLM.__init__` around `_request_timeout`, `_iter_sse_lines` (the chunk loop and the body-ceiling check), that both parsers still iterate `_iter_sse_lines`, that `CodexRunawayStreamError` is still retried by `call()` and raised at once by `call_with_tools` (`test_call_retries_a_capped_attempt_and_recovers`, `test_call_with_tools_raises_a_capped_attempt_at_once`), and the SSE event names. `sse_delta_scan` splits with `str.splitlines` and decides whether a chunk ends a line by `str.splitlines` too, the rule `codex_llm._LINE_BREAK_RE` spells out; if upstream changes how `_iter_sse_lines` splits lines, change the scanner with it. The env value is parsed by upstream `config._parse_optional_positive_int`; if upstream renames or changes it, re-check `max_output_deltas_from_env`. Re-check the 287 characters per delta and the ceiling arithmetic above if the backend's envelope changes.
 
 `test_codex_keeps_the_output_cap_hooks` fails if C2, C3 or C4 is lost or moved out of order (and the attempt-usage `test_codex_keeps_the_attempt_meter_hooks` checks C3 and C4 too). `test_codex_keeps_the_8_mib_ceiling` fails if C5 is lost, `test_config_keeps_the_output_cap_env_hook` if C1 is. `test_a_chunk_past_both_guards_raises_the_body_ceiling` pins which message wins when one chunk crosses both guards.
 

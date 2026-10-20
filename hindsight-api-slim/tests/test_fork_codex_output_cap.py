@@ -98,7 +98,9 @@ def test_unset_or_empty_means_no_cap(monkeypatch):
     assert max_output_deltas_from_env() is None
 
 
-@pytest.mark.parametrize(("raw", "cap"), [("25000", 25000), (" 25000 ", 25000)])
+@pytest.mark.parametrize(
+    ("raw", "cap"), [("25000", 25000), (" 25000 ", 25000), ("+5", 5), ("5_000", 5000), ("\u0663", 3)]
+)
 def test_a_positive_integer_is_the_cap(monkeypatch, raw, cap):
     # Parsed by config._parse_optional_positive_int, the rule of the other integer settings (int()).
     monkeypatch.setenv(ENV, raw)

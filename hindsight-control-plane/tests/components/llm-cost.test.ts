@@ -9,19 +9,7 @@ import {
   llmCostPanelEnabled,
 } from "@/lib/fork/llm-cost";
 import { COST_LOAD_ERROR } from "@/lib/fork/fork-request";
-
-/** Stubs the global fetch with one fixed status and JSON body, and returns the spy. */
-function stubFetch(status: number, body: unknown = {}) {
-  const spy = vi.fn(async (...args: [RequestInfo | URL, RequestInit?]) => {
-    void args; // the spy records the call; the response does not depend on it
-    return new Response(JSON.stringify(body), {
-      status,
-      headers: { "Content-Type": "application/json" },
-    });
-  });
-  vi.stubGlobal("fetch", spy);
-  return spy;
-}
+import { stubFetch } from "./fork-test-helpers";
 
 /** The requested URL as a parsed URL, so encoding is checked the way the server decodes it. */
 function requestedUrl(spy: ReturnType<typeof stubFetch>): URL {

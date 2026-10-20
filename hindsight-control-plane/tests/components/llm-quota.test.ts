@@ -10,6 +10,7 @@ import {
   type ProviderQuota,
 } from "@/lib/fork/llm-quota";
 import { QUOTA_LOAD_ERROR } from "@/lib/fork/fork-request";
+import { stubFetch } from "./fork-test-helpers";
 
 const EN_RESET = {
   daysHours: "in {d}d {h}h",
@@ -23,19 +24,6 @@ const ZH_RESET = {
   minutes: "{m} 分鐘後",
   underMinute: "不到 1 分鐘",
 };
-
-/** Stubs the global fetch with one fixed status and JSON body, and returns the spy. */
-function stubFetch(status: number, body: unknown = {}) {
-  const spy = vi.fn(async (...args: [RequestInfo | URL, RequestInit?]) => {
-    void args; // the spy records the call; the response does not depend on it
-    return new Response(JSON.stringify(body), {
-      status,
-      headers: { "Content-Type": "application/json" },
-    });
-  });
-  vi.stubGlobal("fetch", spy);
-  return spy;
-}
 
 afterEach(() => {
   vi.unstubAllGlobals();

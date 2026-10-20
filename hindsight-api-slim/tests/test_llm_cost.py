@@ -388,6 +388,15 @@ def test_codex_cache_writes_tells_a_reported_zero_from_none_reported(details, ex
     assert llm_cost._codex_cache_writes({"response": "not-a-dict"}) is None
 
 
+def test_codex_cache_writes_ignores_malformed_sibling_fields():
+    # A malformed sibling block does not hide a reported count, and a negative count reads as zero.
+    for sibling in (None, "x", 3):
+        usage = {"input_tokens": 50, "cost_details": sibling, "input_tokens_details": {"cache_write_tokens": 11}}
+        assert llm_cost._codex_cache_writes({"response": {"usage": usage}}) == 11
+    usage = {"input_tokens": 50, "input_tokens_details": {"cache_write_tokens": -2}}
+    assert llm_cost._codex_cache_writes({"response": {"usage": usage}}) == 0
+
+
 def test_codex_cache_writes_reads_the_explicit_zero_the_chatgpt_backend_sends():
     """Shape of a real ``response.completed`` usage block from the ChatGPT backend (gpt-6.1-sol, 2026-10-20).
 
