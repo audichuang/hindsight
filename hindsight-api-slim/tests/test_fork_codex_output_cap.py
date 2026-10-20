@@ -15,6 +15,7 @@ from hindsight_api.engine.providers import codex_llm
 from hindsight_api.engine.providers.codex_llm import CodexLLM, CodexRunawayStreamError
 from hindsight_api.engine.providers.codex_output_cap import CodexAttemptScan, max_output_deltas_from_env
 from tests.codex_stream_stub import CodexReply, stub_codex_stream, stub_codex_stream_with
+from tests.fork_helpers import build_codex
 
 ENV = "HINDSIGHT_API_CODEX_MAX_OUTPUT_DELTAS"
 _MESSAGES = [{"role": "user", "content": "list the claims"}]
@@ -66,21 +67,8 @@ def _tool_reply(deltas: int) -> str:
     )
 
 
-def _build_llm() -> CodexLLM:
-    with (
-        patch.object(CodexLLM, "_load_codex_auth", return_value=("token", "account")),
-        patch.object(CodexLLM, "_load_codex_refresh_token", return_value=None),
-    ):
-        return CodexLLM(
-            provider="openai-codex",
-            api_key="ignored",
-            base_url="https://chatgpt.com/backend-api",
-            model="gpt-5.4-mini",
-        )
-
-
 async def _call(body: str) -> str:
-    llm = _build_llm()
+    llm = build_codex()
     try:
         with stub_codex_stream(llm, CodexReply(text=body)):
             result = await llm.call(messages=_MESSAGES, max_retries=0)
@@ -90,7 +78,7 @@ async def _call(body: str) -> str:
 
 
 async def _call_with_tools(body: str) -> int:
-    llm = _build_llm()
+    llm = build_codex()
     tools = [{"type": "function", "function": {"name": "search", "parameters": {"type": "object"}}}]
     try:
         with stub_codex_stream(llm, CodexReply(text=body)):
@@ -123,7 +111,7 @@ def test_a_bad_value_fails_provider_construction(monkeypatch, raw):
     # instead of silently leaving the cap off.
     monkeypatch.setenv(ENV, raw)
     with pytest.raises(ValueError, match=ENV):
-        _build_llm()
+        build_codex()
 
 
 # --- behaviour -------------------------------------------------------------------------------------
@@ -173,7 +161,7 @@ async def test_call_with_tools_is_capped_on_argument_deltas(monkeypatch):
 async def test_each_attempt_counts_from_zero(monkeypatch):
     # Two 60-delta attempts under a cap of 100: the retry is not charged for the first attempt.
     monkeypatch.setenv(ENV, "100")
-    llm = _build_llm()
+    llm = build_codex()
     try:
         with stub_codex_stream(llm, CodexReply(text=_text_reply(60))) as mock:
             assert (await llm.call(messages=_MESSAGES, max_retries=0)).content == "x" * 60
@@ -219,7 +207,7 @@ async def test_a_chunk_past_both_guards_raises_the_body_ceiling(monkeypatch, cei
     monkeypatch.setenv(ENV, "1")
     body = _text_reply(5)
     monkeypatch.setattr(codex_llm, "_MAX_SSE_BODY_CHARS", len(body) + ceiling_offset)
-    llm = _build_llm()
+    llm = build_codex()
     with pytest.raises(CodexRunawayStreamError, match=message):
         [line async for line in llm._iter_sse_lines(_OneChunk(body))]  # type: ignore[arg-type]
 
@@ -234,7 +222,7 @@ async def test_call_retries_a_capped_attempt_and_recovers(monkeypatch):
     # FORK-CODEX-OUTPUT-CAP.md: call() handles a cap trip as it handles the body ceiling, a
     # transient error retried with a fresh counter.
     monkeypatch.setenv(ENV, "50")
-    llm = _build_llm()
+    llm = build_codex()
     try:
         with (
             patch("asyncio.sleep"),
@@ -253,7 +241,7 @@ async def test_call_with_tools_raises_a_capped_attempt_at_once(monkeypatch):
     # is raised on the first attempt, as the body ceiling is; the reflect agent's next iteration
     # is the retry. If upstream adds a runaway retry here, update the document with this test.
     monkeypatch.setenv(ENV, "50")
-    llm = _build_llm()
+    llm = build_codex()
     tools = [{"type": "function", "function": {"name": "search", "parameters": {"type": "object"}}}]
     try:
         with stub_codex_stream_with(llm, _first_then(_tool_reply(51), _tool_reply(50))) as mock:

@@ -10,7 +10,6 @@ check the stored ``llm_info``. The feature-off tests check that each provider pa
 exact kwargs and that no row carries a ``usage`` key.
 """
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,15 +19,14 @@ import pytest
 from anthropic.types import CacheCreation, Usage
 
 from hindsight_api import tracing
-from hindsight_api.config import clear_config_cache
 from hindsight_api.engine import llm_cost
-from hindsight_api.engine.llm_cost import load_cost_settings
 from hindsight_api.engine.llm_interface import LLM_TOOL_CHOICE_AUTO, LLM_TOOL_CHOICE_REQUIRED
 from hindsight_api.engine.llm_trace import LLMRequestRecord, LLMTraceRecorder
 from hindsight_api.engine.providers import claude_code_llm as claude_module
 from hindsight_api.engine.providers.openai_compatible_llm import OpenAICompatibleLLM
 from hindsight_api.engine.providers.openai_responses_llm import OpenAIResponsesLLM
 from tests.codex_stream_stub import CodexReply, stub_codex_stream
+from tests.fork_helpers import build_codex, cost_env_cleared, enable_cost
 from tests.test_fork_claude_code_usage import (
     _RECALL_TOOL,
     ANTHROPIC_USAGE,
@@ -42,7 +40,7 @@ from tests.test_fork_claude_code_usage import (
 from tests.test_fork_codex_usage import _MESSAGES as CODEX_MESSAGES
 from tests.test_fork_codex_usage import _TOOLS as CODEX_TOOLS
 from tests.test_fork_codex_usage import USAGE as CODEX_USAGE
-from tests.test_fork_codex_usage import _build_llm, _Facts, _text_stream, _tool_stream
+from tests.test_fork_codex_usage import _Facts, _text_stream, _tool_stream
 
 ENGINE_DIR = Path(__file__).resolve().parent.parent / "hindsight_api" / "engine"
 PROVIDERS_DIR = ENGINE_DIR / "providers"
@@ -188,21 +186,12 @@ class _Traced:
 
 @pytest.fixture(autouse=True)
 def _clean_cost_env(monkeypatch):
-    for name in list(os.environ):
-        if name.startswith("HINDSIGHT_API_LLM_COST_"):
-            monkeypatch.delenv(name)
-    clear_config_cache()
-    load_cost_settings.cache_clear()
-    yield
-    clear_config_cache()
-    load_cost_settings.cache_clear()
+    yield from cost_env_cleared(monkeypatch)
 
 
 @pytest.fixture
 def cost_on(monkeypatch):
-    monkeypatch.setenv("HINDSIGHT_API_LLM_COST_ENABLED", "true")
-    clear_config_cache()
-    load_cost_settings.cache_clear()
+    enable_cost(monkeypatch)
 
 
 @pytest.fixture
@@ -306,7 +295,7 @@ async def _claude_tools_drive(monkeypatch, *, assistant_usage=None) -> None:
 
 
 async def _codex_call_drive(monkeypatch, *, usage=CODEX_USAGE) -> None:
-    llm = _build_llm()
+    llm = build_codex()
     with (
         stub_codex_stream(llm, CodexReply(text=_text_stream('{"facts": ["a"]}', usage=usage))),
         patch("hindsight_api.engine.providers.codex_llm.get_metrics_collector", return_value=MagicMock()),
@@ -315,7 +304,7 @@ async def _codex_call_drive(monkeypatch, *, usage=CODEX_USAGE) -> None:
 
 
 async def _codex_tools_drive(monkeypatch, *, usage=CODEX_USAGE) -> None:
-    llm = _build_llm()
+    llm = build_codex()
     with (
         stub_codex_stream(llm, CodexReply(text=_tool_stream("recall", {"query": "x"}, usage=usage))),
         patch("hindsight_api.engine.providers.codex_llm.get_metrics_collector", return_value=MagicMock()),

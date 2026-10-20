@@ -14,8 +14,9 @@ from pydantic import BaseModel
 from hindsight_api import tracing
 from hindsight_api.engine.aiohttp_session import UpstreamHTTPError
 from hindsight_api.engine.llm_trace import current_response_usage
-from hindsight_api.engine.providers.codex_llm import _STRUCTURED_TOOL_NAME, CodexLLM, CodexStreamError
+from hindsight_api.engine.providers.codex_llm import _STRUCTURED_TOOL_NAME, CodexStreamError
 from tests.codex_stream_stub import CodexReply, stub_codex_stream, stub_codex_stream_with
+from tests.fork_helpers import build_codex
 
 pytestmark = pytest.mark.asyncio
 
@@ -80,19 +81,6 @@ def _tool_stream(name: str, arguments: dict, usage: dict | None = USAGE) -> str:
     return _sse(*events)
 
 
-def _build_llm() -> CodexLLM:
-    with (
-        patch.object(CodexLLM, "_load_codex_auth", return_value=("token", "account")),
-        patch.object(CodexLLM, "_load_codex_refresh_token", return_value=None),
-    ):
-        return CodexLLM(
-            provider="openai-codex",
-            api_key="ignored",
-            base_url="https://chatgpt.com/backend-api",
-            model="gpt-5.4-mini",
-        )
-
-
 class _SpanSpy:
     def __init__(self) -> None:
         self.calls: list[dict] = []
@@ -110,7 +98,7 @@ def span_spy():
 
 
 async def test_call_reports_real_usage_from_response_completed():
-    llm = _build_llm()
+    llm = build_codex()
     metrics = MagicMock()
     with (
         stub_codex_stream(llm, CodexReply(text=_text_stream('{"facts": ["a"]}'))),
@@ -133,7 +121,7 @@ async def test_call_reports_real_usage_from_response_completed():
 
 
 async def test_call_with_tools_reports_real_usage_from_response_completed():
-    llm = _build_llm()
+    llm = build_codex()
     metrics = MagicMock()
     with (
         stub_codex_stream(llm, CodexReply(text=_tool_stream("recall", {"query": "x"}))),
@@ -153,7 +141,7 @@ async def test_call_with_tools_reports_real_usage_from_response_completed():
 
 
 async def test_call_without_response_completed_keeps_the_char_estimate():
-    llm = _build_llm()
+    llm = build_codex()
     content = '{"facts": ["a"]}'
     with stub_codex_stream(llm, CodexReply(text=_text_stream(content, usage=None))):
         result = await llm.call(messages=_MESSAGES, response_format=_Facts)
@@ -165,7 +153,7 @@ async def test_call_without_response_completed_keeps_the_char_estimate():
 
 
 async def test_call_with_tools_without_response_completed_reports_zeros():
-    llm = _build_llm()
+    llm = build_codex()
     with stub_codex_stream(llm, CodexReply(text=_tool_stream("recall", {"query": "x"}, usage=None))):
         result = await llm.call_with_tools(messages=_MESSAGES, tools=_TOOLS, max_retries=0)
 
@@ -176,7 +164,7 @@ async def test_call_with_tools_without_response_completed_reports_zeros():
 
 
 async def test_forced_structured_tool_reports_real_usage():
-    llm = _build_llm()
+    llm = build_codex()
     stream = _tool_stream(_STRUCTURED_TOOL_NAME, {"facts": ["a"]})
     with stub_codex_stream(llm, CodexReply(text=stream)):
         result = await llm.call(messages=_MESSAGES, response_format=_Facts, strict_schema=True)
@@ -189,7 +177,7 @@ async def test_forced_structured_tool_reports_real_usage():
 
 
 async def test_span_recorder_sees_the_same_numbers(span_spy):
-    llm = _build_llm()
+    llm = build_codex()
     with stub_codex_stream(llm, CodexReply(text=_text_stream('{"facts": ["a"]}'))):
         await llm.call(messages=_MESSAGES, response_format=_Facts)
     with stub_codex_stream(llm, CodexReply(text=_tool_stream("recall", {"query": "x"}))):
@@ -204,7 +192,7 @@ async def test_span_recorder_sees_the_same_numbers(span_spy):
 
 
 async def test_response_failed_with_usage_is_stashed_before_raising():
-    llm = _build_llm()
+    llm = build_codex()
     failed = _sse(
         (
             "response.failed",
@@ -230,7 +218,7 @@ async def test_response_failed_with_usage_is_stashed_before_raising():
 
 
 async def test_failed_retry_keeps_the_previous_attempt_usage():
-    llm = _build_llm()
+    llm = build_codex()
     calls = {"n": 0}
 
     def handler(_url, **_kwargs):

@@ -6,7 +6,6 @@ moves a price fails here loudly instead of silently.
 """
 
 import logging
-import os
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -43,6 +42,7 @@ from hindsight_api.engine.llm_cost import (
     trace_usage_info,
     xai_oauth_usage_kwargs,
 )
+from tests.fork_helpers import cost_env_cleared
 
 PACKAGE_ROOT = Path(hindsight_api.__file__).parent
 ENV_PREFIX = "HINDSIGHT_API_LLM_COST_"
@@ -55,12 +55,7 @@ TOL = 1e-9
 @pytest.fixture(autouse=True)
 def _clean_cost_env(monkeypatch):
     """No feature variable leaks in from the shell, and the settings cache is fresh for every test."""
-    for name in list(os.environ):
-        if name.startswith(ENV_PREFIX):
-            monkeypatch.delenv(name)
-    load_cost_settings.cache_clear()
-    yield
-    load_cost_settings.cache_clear()
+    yield from cost_env_cleared(monkeypatch)
 
 
 def _marked(**fields) -> StoredUsage:

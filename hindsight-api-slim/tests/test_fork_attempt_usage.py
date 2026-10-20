@@ -8,22 +8,20 @@ was not marked as one. Each test below fails with the hooks removed.
 
 import inspect
 import json
-import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import BaseModel
 
 from hindsight_api import tracing
-from hindsight_api.config import clear_config_cache
 from hindsight_api.engine import llm_trace
-from hindsight_api.engine.llm_cost import load_cost_settings
 from hindsight_api.engine.llm_trace import LLMRequestRecord, LLMTraceRecorder
 from hindsight_api.engine.llm_wrapper import LLMProvider
 from hindsight_api.engine.providers import codex_llm
 from hindsight_api.engine.providers.codex_llm import CodexLLM, CodexRunawayStreamError
 from tests.codex_stream_stub import CodexReply, stub_codex_stream_with
+from tests.fork_helpers import build_codex, cost_env_cleared, enable_cost
 
 pytestmark = pytest.mark.asyncio
 
@@ -50,21 +48,12 @@ class _CapturingRecorder(LLMTraceRecorder):
 
 @pytest.fixture(autouse=True)
 def _clean_cost_env(monkeypatch):
-    for name in list(os.environ):
-        if name.startswith("HINDSIGHT_API_LLM_COST_"):
-            monkeypatch.delenv(name)
-    clear_config_cache()
-    load_cost_settings.cache_clear()
-    yield
-    clear_config_cache()
-    load_cost_settings.cache_clear()
+    yield from cost_env_cleared(monkeypatch)
 
 
 @pytest.fixture
 def cost_on(monkeypatch):
-    monkeypatch.setenv("HINDSIGHT_API_LLM_COST_ENABLED", "true")
-    clear_config_cache()
-    load_cost_settings.cache_clear()
+    enable_cost(monkeypatch)
 
 
 @pytest.fixture
@@ -117,14 +106,7 @@ _DELTAS_PER_RUNAWAY = range(_CEILING // len(_RUNAWAY_DELTA), 2 * _CEILING // len
 
 def _wrapper(replies: list[str]) -> LLMProvider:
     llm = LLMProvider(provider="anthropic", api_key="test-key", base_url="", model="claude-x")
-    with (
-        patch.object(CodexLLM, "_load_codex_auth", return_value=("token", "account")),
-        patch.object(CodexLLM, "_load_codex_refresh_token", return_value=None),
-    ):
-        impl = CodexLLM(
-            provider="openai-codex", api_key="ignored", base_url="https://chatgpt.com/backend-api", model="gpt-x"
-        )
-    llm._provider_impl = impl
+    llm._provider_impl = build_codex("gpt-x")
     llm.provider = "openai-codex"
     llm.model = "gpt-x"
     queue = list(replies)

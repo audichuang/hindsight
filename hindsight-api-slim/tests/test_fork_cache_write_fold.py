@@ -9,28 +9,22 @@ from datetime import UTC, datetime
 
 import pytest
 
-from hindsight_api.config import clear_config_cache
 from hindsight_api.engine.llm_cost import (
     FORK_USAGE_KWARG,
     CostSettings,
     RowUsage,
     StoredUsage,
     claude_code_usage_kwargs,
-    load_cost_settings,
     read_stored_usage,
     summarize_costs,
 )
 from hindsight_api.engine.providers.claude_code_llm import _usage_from_sdk_usage
+from tests.fork_helpers import cost_env_cleared
 
 
 @pytest.fixture(autouse=True)
 def _cost_on(monkeypatch):
-    monkeypatch.setenv("HINDSIGHT_API_LLM_COST_ENABLED", "true")
-    clear_config_cache()
-    load_cost_settings.cache_clear()
-    yield
-    clear_config_cache()
-    load_cost_settings.cache_clear()
+    yield from cost_env_cleared(monkeypatch, enabled=True)
 
 
 def test_missing_total_fold_prices_without_negative_uncached_input():

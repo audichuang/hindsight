@@ -13,13 +13,13 @@ the refresh lane's 900 s deadline, so a runaway ran to the deadline on every att
 """
 
 import json
-from unittest.mock import patch
 
 import pytest
 
 from hindsight_api.engine.providers import codex_llm
-from hindsight_api.engine.providers.codex_llm import CodexLLM, CodexRunawayStreamError
+from hindsight_api.engine.providers.codex_llm import CodexRunawayStreamError
 from tests.codex_stream_stub import CodexReply, stub_codex_stream
+from tests.fork_helpers import build_codex
 
 pytestmark = pytest.mark.asyncio
 
@@ -50,21 +50,8 @@ def _long_reply() -> str:
     return _DELTA_EVENT * _TOKENS + completed + "data: [DONE]\n\n"
 
 
-def _build_llm() -> CodexLLM:
-    with (
-        patch.object(CodexLLM, "_load_codex_auth", return_value=("token", "account")),
-        patch.object(CodexLLM, "_load_codex_refresh_token", return_value=None),
-    ):
-        return CodexLLM(
-            provider="openai-codex",
-            api_key="ignored",
-            base_url="https://chatgpt.com/backend-api",
-            model="gpt-5.4-mini",
-        )
-
-
 async def test_a_20k_token_reply_completes():
-    llm = _build_llm()
+    llm = build_codex()
     body = _long_reply()
     # The reply is bigger than the old ceiling; it is a real reply, not a runaway.
     assert 4 * 1024 * 1024 < len(body) < 8 * 1024 * 1024
@@ -78,7 +65,7 @@ async def test_a_20k_token_reply_completes():
 
 
 async def test_a_runaway_is_cut_off_by_size_before_16_mib():
-    llm = _build_llm()
+    llm = build_codex()
     # A stream that never completes. Under a 16 MiB ceiling it would end on its own and
     # be returned as a reply; it has to be abandoned by size instead.
     body = _DELTA_EVENT * _RUNAWAY_DELTAS
