@@ -360,10 +360,15 @@ def test_claude_code_unreadable_usage_and_cost_fall_back_to_estimate(monkeypatch
     assert usage.usage_source == "estimate"
 
 
+def _codex_event(cache_write_tokens: int) -> dict:
+    """A raw Codex ``response.completed`` event reporting ``cache_write_tokens``."""
+    return {"response": {"usage": {"input_tokens_details": {"cache_write_tokens": cache_write_tokens}}}}
+
+
 def test_codex_note_is_tied_to_the_stashed_object(monkeypatch):
     _enable(monkeypatch)
     stash = SimpleNamespace(input_tokens=100000, cached_tokens=10000)
-    note_codex_usage(stash, 20000)
+    note_codex_usage(stash, _codex_event(20000))
     usage = _usage_of(codex_usage_kwargs(stash))
     assert usage.cache_write_tokens == 20000
     assert usage.usage_source == "provider"
@@ -373,9 +378,41 @@ def test_codex_note_is_tied_to_the_stashed_object(monkeypatch):
     assert other.usage_source == "estimate"
 
 
+@pytest.mark.parametrize(
+    "details, expected",
+    [
+        ({"cached_tokens": 10, "cache_write_tokens": 0}, 0),
+        ({"cached_tokens": 10, "cache_write_tokens": 7}, 7),
+        ({"cached_tokens": 10}, None),
+        ({"cached_tokens": 10, "cache_write_tokens": "7"}, None),
+    ],
+)
+def test_codex_cache_writes_tells_a_reported_zero_from_none_reported(details, expected):
+    event = {"type": "response.completed", "response": {"usage": {"input_tokens": 50, "input_tokens_details": details}}}
+    assert llm_cost._codex_cache_writes(event) == expected
+    assert llm_cost._codex_cache_writes({"response": "not-a-dict"}) is None
+
+
+def test_codex_cache_writes_reads_the_explicit_zero_the_chatgpt_backend_sends():
+    """Shape of a real ``response.completed`` usage block from the ChatGPT backend (gpt-6.1-sol, 2026-10-20).
+
+    The backend sends ``cache_write_tokens: 0`` explicitly, also on the call that created the cache, so the
+    row records a reported zero (a breakdown), not a missing one.
+    """
+    usage = {
+        "input_tokens": 6841,
+        "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+        "output_tokens": 5,
+        "output_tokens_details": {"reasoning_tokens": 0},
+        "total_tokens": 6846,
+        "attribution": {"request_fields": {"instructions": {"input_tokens": 6826, "cache_write_tokens": 0}}},
+    }
+    assert llm_cost._codex_cache_writes({"type": "response.completed", "response": {"usage": usage}}) == 0
+
+
 def test_codex_note_is_a_no_op_with_the_feature_off():
     stash = SimpleNamespace(input_tokens=1, cached_tokens=0)
-    note_codex_usage(stash, 99)
+    note_codex_usage(stash, _codex_event(99))
     assert codex_usage_kwargs(stash) == {}
 
 
@@ -384,7 +421,7 @@ def test_codex_gpt_6_1_sol_write_is_priced_at_the_write_rate(monkeypatch):
     # = 0.140000 + 0.001000 + 0.050000 + 0.001000 = 0.192
     _enable(monkeypatch)
     stash = SimpleNamespace(input_tokens=100000, cached_tokens=10000)
-    note_codex_usage(stash, 20000)
+    note_codex_usage(stash, _codex_event(20000))
     info = trace_usage_info(codex_usage_kwargs(stash))
     row = RowUsage(
         provider="openai-codex",
@@ -428,8 +465,19 @@ def test_openai_compatible_cache_write_fallbacks(monkeypatch):
     assert _usage_of(openai_compatible_usage_kwargs("openrouter", None, details)).cache_write_tokens == 300
     top = _completion(cache_creation_input_tokens=125)
     assert _usage_of(openai_compatible_usage_kwargs("openai", None, top)).cache_write_tokens == 125
+    zero = _completion(prompt_tokens_details={"cached_tokens": 0, "cache_write_tokens": 0})
+    assert _usage_of(openai_compatible_usage_kwargs("openrouter", None, zero)).cache_write_tokens == 0
     plain = _usage_of(openai_compatible_usage_kwargs("openai", None, _completion()))
-    assert plain.cache_write_tokens == 0  # the provider reported no writes: a known zero
+    assert plain.cache_write_tokens is None  # no write field sent: no breakdown, not "no writes"
+    assert "cache_write_tokens" not in plain.to_llm_info()["usage"]
+
+
+def test_openai_responses_without_a_cache_write_field_has_no_breakdown(monkeypatch):
+    _enable(monkeypatch)
+    absent = SimpleNamespace(usage=SimpleNamespace(input_tokens_details=SimpleNamespace(cached_tokens=10)))
+    assert _usage_of(openai_responses_usage_kwargs(absent)).cache_write_tokens is None
+    zero = SimpleNamespace(usage=SimpleNamespace(input_tokens_details=SimpleNamespace(cache_write_tokens=0)))
+    assert _usage_of(openai_responses_usage_kwargs(zero)).cache_write_tokens == 0
 
 
 @pytest.mark.parametrize(
@@ -505,7 +553,7 @@ def test_adapters_never_raise_on_garbage(monkeypatch, garbage):
     openai_compatible_usage_kwargs("openai", None, SimpleNamespace(usage=garbage))
     openai_responses_usage_kwargs(SimpleNamespace(usage=garbage))
     xai_oauth_usage_kwargs(garbage)
-    note_codex_usage(garbage, 1)
+    note_codex_usage(garbage, _codex_event(1))
 
 
 # --- Write path: the marker ---------------------------------------------------------------------

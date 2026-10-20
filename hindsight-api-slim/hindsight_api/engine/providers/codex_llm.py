@@ -290,7 +290,7 @@ def _usage_from_codex_completed(data: Any) -> LLMResponseUsage | None:
     )
     from hindsight_api.engine.llm_cost import note_codex_usage  # fork: cost-accounting
 
-    note_codex_usage(result, usage.input_tokens_details.cache_write_tokens)  # fork: cost-accounting
+    note_codex_usage(result, data)  # fork: cost-accounting
     return result
 
 

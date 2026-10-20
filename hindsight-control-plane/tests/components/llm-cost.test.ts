@@ -8,6 +8,7 @@ import {
   isPartlyProviderReported,
   llmCostPanelEnabled,
 } from "@/lib/fork/llm-cost";
+import { COST_LOAD_ERROR } from "@/lib/fork/fork-request";
 
 /** Stubs the global fetch with one fixed status and JSON body, and returns the spy. */
 function stubFetch(status: number, body: unknown = {}) {
@@ -106,6 +107,30 @@ describe("fetchLLMCostSummary", () => {
     await expect(fetchLLMCostSummary("bank", { period: "7d", tz: "UTC" })).rejects.toThrow(
       "status 500"
     );
+  });
+
+  it("keeps the proxy's error text so the panel can say why", async () => {
+    stubFetch(400, { error: "Unknown time zone: Mars/Base" });
+    await expect(fetchLLMCostSummary("bank", { period: "7d", tz: "UTC" })).rejects.toMatchObject({
+      status: 400,
+      detail: "Unknown time zone: Mars/Base",
+    });
+  });
+
+  it("drops the proxy's generic load-error text, which repeats the panel's own message", async () => {
+    stubFetch(500, { error: COST_LOAD_ERROR });
+    await expect(fetchLLMCostSummary("bank", { period: "7d", tz: "UTC" })).rejects.toMatchObject({
+      status: 500,
+      detail: null,
+    });
+  });
+
+  it("has no detail when the failure body is not the proxy's shape", async () => {
+    stubFetch(502, "upstream down");
+    await expect(fetchLLMCostSummary("bank", { period: "7d", tz: "UTC" })).rejects.toMatchObject({
+      status: 502,
+      detail: null,
+    });
   });
 
   it("resolves to the parsed body on 200", async () => {

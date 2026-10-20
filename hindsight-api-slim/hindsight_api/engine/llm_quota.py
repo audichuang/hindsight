@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import math
+import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
@@ -34,6 +35,7 @@ from hindsight_api.engine.multi_llm import MultiLLMProvider
 
 if TYPE_CHECKING:
     from hindsight_api.engine.memory_engine import MemoryEngine
+    from hindsight_api.engine.providers.codex_llm import CodexLLM
     from hindsight_api.models import RequestContext
 
 logger = logging.getLogger(__name__)
@@ -175,6 +177,8 @@ class HttpGet(Protocol):
 # Shared like every other outbound call: LoopLocalSession follows HTTPS_PROXY/HTTP_PROXY/NO_PROXY, so the
 # quota probe reaches the provider the same way the LLM calls for the same credential do.
 _QUOTA_SESSION = LoopLocalSession(timeout=per_phase_timeout(10))
+# Total per-target deadline, enforced by QuotaCache around the whole fetch (the session's 10 s is per phase).
+QUOTA_FETCH_TIMEOUT_SECONDS = 10.0
 
 
 async def default_http_get(url: str, headers: Mapping[str, str]) -> HttpResult:
@@ -519,6 +523,58 @@ async def _run_fetch(
         return _failed("internal_error", fetched_at)
 
 
+# Refresh tasks that may outlive a cancelled quota fetch; held here so they are not garbage-collected mid-run,
+# and so engine shutdown can wait for them (drain_detached_refreshes). Process-global and reachable from any
+# loop's thread, so every access goes through a threading lock.
+_DETACHED_REFRESHES: set[asyncio.Task[None]] = set()
+_DETACHED_REFRESHES_LOCK = threading.Lock()
+
+
+def _settle_detached_refresh(task: asyncio.Task[None]) -> None:
+    with _DETACHED_REFRESHES_LOCK:
+        _DETACHED_REFRESHES.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.debug("Codex token refresh started by the quota probe failed: %s", type(task.exception()).__name__)
+
+
+async def _refresh_shielded(impl: "CodexLLM") -> None:
+    """The lane's proactive token refresh, shielded from the quota deadline.
+
+    The refresh rotates the refresh token: cancelling it between the provider's answer and the
+    in-memory update would leave the live Codex lane holding a refresh token that no longer works.
+    When the deadline fires, the refresh runs to completion in the background and the fetch reports
+    ``timeout``; the next Codex call sees the new tokens.
+    """
+    task = asyncio.create_task(impl._ensure_fresh_token())
+    with _DETACHED_REFRESHES_LOCK:
+        _DETACHED_REFRESHES.add(task)
+    task.add_done_callback(_settle_detached_refresh)
+    await asyncio.shield(task)
+
+
+# Upper bound on how long engine shutdown waits for detached refreshes. A refresh is itself bounded by its
+# auth-store lock timeout and per-phase session timeout; this keeps shutdown inside a container stop grace.
+DETACHED_REFRESH_DRAIN_SECONDS = 15.0
+
+
+async def drain_detached_refreshes(timeout: float = DETACHED_REFRESH_DRAIN_SECONDS) -> None:
+    """Wait, up to ``timeout``, for this loop's refreshes the quota deadline left running in the background.
+
+    Called by ``MemoryEngine.close()`` before it closes the loop's HTTP sessions: closing the session under
+    a refresh whose token endpoint has already rotated the refresh token, but whose body is still arriving,
+    would lose the new tokens and leave ``auth.json`` with a refresh token that no longer works. Never raises.
+    """
+    loop = asyncio.get_running_loop()
+    with _DETACHED_REFRESHES_LOCK:
+        pending = [task for task in _DETACHED_REFRESHES if task.get_loop() is loop and not task.done()]
+    if not pending:
+        return
+    logger.info("Waiting for %d Codex token refresh(es) started by the quota probe", len(pending))
+    _done, still_running = await asyncio.wait(pending, timeout=timeout)
+    if still_running:
+        logger.warning("%d Codex token refresh(es) still running at shutdown", len(still_running))
+
+
 async def _fetch_codex(impl: object, http_get: HttpGet, fetched_at: datetime) -> QuotaReading:
     from hindsight_api.engine.providers.codex_auth import CodexRefreshExpiredError
     from hindsight_api.engine.providers.codex_llm import CodexLLM
@@ -526,7 +582,7 @@ async def _fetch_codex(impl: object, http_get: HttpGet, fetched_at: datetime) ->
     if not isinstance(impl, CodexLLM):
         return _failed("internal_error", fetched_at)
     try:
-        await impl._ensure_fresh_token()
+        await _refresh_shielded(impl)
         headers = {k: v for k, v in impl._build_request_headers().items() if k != "Content-Type"}
     except CodexRefreshExpiredError:
         return _failed("auth_failed", fetched_at)
@@ -695,8 +751,10 @@ class QuotaCache:
         ttl_seconds: float = 60.0,
         backoff_base_seconds: float = 60.0,
         backoff_cap_seconds: float = 900.0,
+        fetch_timeout_seconds: float = QUOTA_FETCH_TIMEOUT_SECONDS,
     ) -> None:
         self.clock = clock
+        self._fetch_timeout = fetch_timeout_seconds
         self._ttl = ttl_seconds
         self._backoff_base = backoff_base_seconds
         self._backoff_cap = backoff_cap_seconds
@@ -713,7 +771,13 @@ class QuotaCache:
             if slot.failures > 0 and now < slot.retry_at:
                 return self._degraded(slot)
             try:
-                reading = await fetch()
+                # One wall-clock deadline per target, covering the Codex token refresh, the GET and the body.
+                # The session's own timeout is per phase (each socket read), so a provider that trickles
+                # bytes would otherwise hold this key's lock, and the whole /quota gather, indefinitely.
+                async with asyncio.timeout(self._fetch_timeout):
+                    reading = await fetch()
+            except TimeoutError:
+                reading = _failed("timeout", datetime.fromtimestamp(now, UTC))
             except Exception:
                 reading = _failed("internal_error", datetime.fromtimestamp(now, UTC))
             if reading.status == "ok":

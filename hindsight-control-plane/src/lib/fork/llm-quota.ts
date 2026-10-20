@@ -4,6 +4,7 @@
 // maintained by hand.
 
 import { withBasePath } from "@/lib/base-path";
+import { errorDetail, ForkRequestError } from "@/lib/fork/fork-request";
 
 export type QuotaStatus = "ok" | "unsupported" | "unavailable" | "error";
 export type QuotaReason =
@@ -65,7 +66,7 @@ async function fetchJsonOrNull<T>(path: string): Promise<T | null> {
     return null;
   }
   if (!response.ok) {
-    throw new Error(`quota request failed with status ${response.status}`);
+    throw new ForkRequestError(response.status, await errorDetail(response));
   }
   return (await response.json()) as T;
 }
@@ -84,11 +85,23 @@ export function clampPercent(n: number | null): number | null {
   return Math.min(100, Math.max(0, n));
 }
 
+/** Templates for the reset countdown; `{d}`, `{h}` and `{m}` are replaced with numbers. */
+export interface ResetInLabels {
+  daysHours: string;
+  hoursMinutes: string;
+  minutes: string;
+  underMinute: string;
+}
+
 /**
- * Relative time until `resetsAtIso`, such as "in 3h 20m" or "in 2d 4h". Returns an empty string
- * for a null, unparseable or past time.
+ * Relative time until `resetsAtIso` in the caller's language, such as "in 3h 20m" or "3 小時 20 分後".
+ * Returns an empty string for a null, unparseable or past time.
  */
-export function formatResetIn(resetsAtIso: string | null, now: Date): string {
+export function formatResetIn(
+  resetsAtIso: string | null,
+  now: Date,
+  labels: ResetInLabels
+): string {
   if (resetsAtIso === null) {
     return "";
   }
@@ -101,17 +114,56 @@ export function formatResetIn(resetsAtIso: string | null, now: Date): string {
     return "";
   }
   const totalMinutes = Math.floor(diffMs / 60_000);
-  if (totalMinutes === 0) {
-    return "in <1m";
+  const d = Math.floor(totalMinutes / 1440);
+  const h = Math.floor((totalMinutes % 1440) / 60);
+  const m = totalMinutes % 60;
+  const template =
+    totalMinutes === 0
+      ? labels.underMinute
+      : d > 0
+        ? labels.daysHours
+        : h > 0
+          ? labels.hoursMinutes
+          : labels.minutes;
+  return template.replace("{d}", String(d)).replace("{h}", String(h)).replace("{m}", String(m));
+}
+
+/** A credit balance with at most two decimals, grouped for the locale ("62,199.48"). */
+export function formatBalance(balance: number, locale: string): string {
+  return balance.toLocaleString(locale, { maximumFractionDigits: 2 });
+}
+
+/** The newest `fetched_at` across providers, or an empty string when none has one. */
+export function newestFetchedAt(data: LLMQuotaResponse): string {
+  return data.providers.reduce(
+    (max, p) => (p.fetched_at && p.fetched_at > max ? p.fetched_at : max),
+    ""
+  );
+}
+
+/**
+ * True when the server is backing off this provider after a failed read (60 s, doubling up to
+ * 900 s): it returns the last good reading marked stale, or, with none, the failed reading itself,
+ * which is not `ok` and carries the `fetched_at` of the failure. A provider the server never reads
+ * (unsupported, no credentials) has no `fetched_at` and is not backing off.
+ */
+function isBackingOff(p: ProviderQuota): boolean {
+  return p.stale || (p.status !== "ok" && p.fetched_at !== null);
+}
+
+/**
+ * True when a manual refresh brought back the reading already on screen because the server's
+ * 60 s cache answered it. `previousNewest` is null when there is nothing to compare (the first
+ * load, or another bank). False while any provider is backing off (see `isBackingOff`): the
+ * server then returns the same reading for up to 900 s, so "once a minute" would be wrong.
+ */
+export function refreshHitServerCache(
+  previousNewest: string | null,
+  data: LLMQuotaResponse
+): boolean {
+  if (previousNewest === null || data.providers.some(isBackingOff)) {
+    return false;
   }
-  const days = Math.floor(totalMinutes / 1440);
-  const hours = Math.floor((totalMinutes % 1440) / 60);
-  const minutes = totalMinutes % 60;
-  if (days > 0) {
-    return `in ${days}d ${hours}h`;
-  }
-  if (hours > 0) {
-    return `in ${hours}h ${minutes}m`;
-  }
-  return `in ${minutes}m`;
+  const newest = newestFetchedAt(data);
+  return newest !== "" && newest === previousNewest;
 }

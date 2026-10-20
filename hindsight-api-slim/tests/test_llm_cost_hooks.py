@@ -67,13 +67,17 @@ HOOK_LINES: dict[str, list[tuple[str, int]]] = {
     ],
     "providers/codex_llm.py": [
         ("from hindsight_api.engine.llm_cost import note_codex_usage  # fork: cost-accounting", 1),
-        ("note_codex_usage(result, usage.input_tokens_details.cache_write_tokens)  # fork: cost-accounting", 1),
+        ("note_codex_usage(result, data)  # fork: cost-accounting", 1),
         ("from hindsight_api.engine.llm_cost import codex_usage_kwargs  # fork: cost-accounting", 2),
         ("**codex_usage_kwargs(usage),  # fork: cost-accounting", 2),
     ],
     "providers/openai_compatible_llm.py": [
         ("from hindsight_api.engine.llm_cost import openai_compatible_usage_kwargs  # fork: cost-accounting", 2),
         ("**openai_compatible_usage_kwargs(self.provider, self.base_url, response),  # fork: cost-accounting", 2),
+    ],
+    "memory_engine.py": [
+        ("from .llm_quota import drain_detached_refreshes  # fork: cost-accounting", 1),
+        ("await drain_detached_refreshes()  # fork: cost-accounting", 1),
     ],
     "providers/openai_responses_llm.py": [
         ("response: Any = None,  # fork: cost-accounting", 1),
@@ -85,6 +89,7 @@ HOOK_LINES: dict[str, list[tuple[str, int]]] = {
 # Marker-line totals per file: the hook lines above, nothing else.
 MARKER_LINE_TOTALS = {
     "llm_trace.py": 2,
+    "memory_engine.py": 2,
     "providers/claude_code_llm.py": 6,
     "providers/codex_llm.py": 6,
     "providers/openai_compatible_llm.py": 4,
@@ -143,6 +148,16 @@ def test_fork_imports_are_local_not_module_level(relative):
     for line in _hook_source(relative).splitlines():
         if "llm_cost import" in line and MARKER in line:
             assert line.startswith(" "), line
+
+
+def test_engine_close_drains_quota_refreshes_before_closing_sessions():
+    # The drain must run before close_loop_sessions(), or a refresh mid-rotation loses its session.
+    source = _hook_source("memory_engine.py")
+    close = source.index("\n    async def close(self):")
+    next_method = source.index("\n    async def ", close + 1)
+    drain = source.index("await drain_detached_refreshes()  # fork: cost-accounting")
+    sessions = source.index("await close_loop_sessions()", close)
+    assert close < drain < sessions < next_method
 
 
 def test_anthropic_hooks_are_unchanged():
@@ -464,13 +479,6 @@ _COMPAT_TOOLS_KEYS = _CODEX_CALL_KEYS | {"tool_calls"}
 _RESPONSES_KEYS = _CODEX_CALL_KEYS | {"tool_calls"}
 
 _V2_ESTIMATE = {"v": 2, "usage_source": "estimate"}
-_V2_ZERO_WRITES = {
-    "v": 2,
-    "cache_write_tokens": 0,
-    "cache_write_5m_tokens": 0,
-    "cache_write_1h_tokens": 0,
-    "usage_source": "provider",
-}
 
 # (id, driver, expected llm_info.usage with the feature on, upstream span kwarg keys with it off)
 PROVIDER_CASES = [
@@ -510,7 +518,7 @@ PROVIDER_CASES = [
     pytest.param(
         "codex-call",
         lambda m: _codex_call_drive(m),
-        _V2_ZERO_WRITES,
+        {"v": 2, "usage_source": "provider"},  # CODEX_USAGE sends no cache_write_tokens: no breakdown, not 0
         _CODEX_CALL_KEYS,
         id="codex-call",
     ),
@@ -573,7 +581,8 @@ PROVIDER_CASES = [
             base_url="https://api.z.ai/api/coding/paas/v4",
             usage=_PLAIN_USAGE,
         ),
-        {**_V2_ZERO_WRITES, "billing_hint": "plan"},
+        # _PLAIN_USAGE sends no cache-write field: no breakdown, not zero writes
+        {"v": 2, "billing_hint": "plan", "usage_source": "provider"},
         _COMPAT_CALL_KEYS,
         id="zai-coding-plan-call",
     ),
