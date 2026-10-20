@@ -164,10 +164,17 @@ _DEFAULT_CODEX_TIMEOUT = 120.0
 # multi-byte body is cut off a little later than the name suggests, which is
 # fine for a backstop). The Codex backend can wedge
 # into runaway generation and emit megabytes of deltas for a request whose real
-# answer is a few hundred bytes (issue #3898); a structured-output call bounded
-# by ``max_completion_tokens`` never approaches this, so blowing past it means
-# the stream is not going to end on its own.
-_MAX_SSE_BODY_CHARS = 4 * 1024 * 1024
+# answer is a few hundred bytes (issue #3898).
+#
+# The count is the raw SSE body, not the answer: every delta event wraps about
+# one token in an estimated ~300 characters of JSON envelope (event name, sequence
+# number, item id, obfuscation padding). ``max_completion_tokens`` is never put
+# into the request, so nothing caps a reply on the server side. At 4 MiB the
+# ceiling cut legitimate replies off at roughly 13-17k output tokens (the envelope
+# per token varies), which split-synthesis map calls
+# ("list every relevant claim" over a context-sized chunk) reach routinely. 16 MiB
+# is about 50k output tokens; the wall-clock deadline still bounds a slow runaway.
+_MAX_SSE_BODY_CHARS = 16 * 1024 * 1024
 
 
 # The characters ``str.splitlines`` breaks a line on.
