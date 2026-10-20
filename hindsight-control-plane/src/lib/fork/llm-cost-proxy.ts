@@ -2,13 +2,12 @@
 // Server side of the fork cost and quota proxies. Forwards one GET to a dataplane endpoint and maps
 // failures to endpoint-specific messages. A dataplane `detail` string is passed through; otherwise the
 // message is an English generic one, which the clients drop (`errorDetail` in fork-request.ts) since
-// the cost and quota panels already show their own localized load-error copy.
+// the cost and quota panels already show their own localized load-error copy. Those generic texts
+// live in fork-request.ts, so client code and tests import them from there.
 
 import { NextResponse } from "next/server";
 import { COST_LOAD_ERROR, QUOTA_LOAD_ERROR } from "@/lib/fork/fork-request";
 import { dataplaneBankUrl, getDataplaneHeaders } from "@/lib/hindsight-client";
-
-export { COST_LOAD_ERROR, QUOTA_LOAD_ERROR };
 
 export type LLMForkEndpoint =
   | "/llm-requests/cost"

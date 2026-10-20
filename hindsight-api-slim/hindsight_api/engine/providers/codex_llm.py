@@ -142,25 +142,10 @@ _DEFAULT_CODEX_TIMEOUT = 120.0
 # multi-byte body is cut off a little later than the name suggests, which is
 # fine for a backstop). The Codex backend can wedge
 # into runaway generation and emit megabytes of deltas for a request whose real
-# answer is a few hundred bytes (issue #3898).
-#
-# The count is the raw SSE body, not the answer. Measured on the ChatGPT backend
-# (gpt-6.1-sol, 2026-10-20): one ``*.delta`` event per output token, each about
-# 287 characters on the wire (event line, JSON envelope with sequence number,
-# item id and obfuscation padding, blank line). ``max_completion_tokens`` is
-# never put into the request, so nothing caps a reply on the server side. At
-# 4 MiB (~14.6k deltas) the ceiling cut legitimate replies off: split-synthesis
-# map calls ("list every relevant claim" over a context-sized chunk) reach
-# 13-14k output tokens routinely.
-#
-# 8 MiB is ~29k deltas, about twice the longest reply seen in production (that
-# distribution was itself truncated at 4 MiB, so the margin is a judgment). At
-# the observed 43-66 output tokens/s it trips after roughly 440-680 s, before a
-# 900 s per-attempt deadline, so a runaway is still cut off by size. A runaway
-# streaming slower than ~32 tokens/s reaches the deadline first; it then costs
-# up to (retries + 1) x timeout plus backoff. A larger ceiling would leave the
-# deadline as the only bound at normal speed.
-_MAX_SSE_BODY_CHARS = 8 * 1024 * 1024
+# answer is a few hundred bytes (issue #3898); a structured-output call bounded
+# by ``max_completion_tokens`` never approaches this, so blowing past it means
+# the stream is not going to end on its own.
+_MAX_SSE_BODY_CHARS = 8 * 1024 * 1024  # fork: codex-output-cap (upstream 4 MiB; see FORK-CODEX-OUTPUT-CAP.md)
 
 
 # The characters ``str.splitlines`` breaks a line on.
@@ -408,9 +393,9 @@ class CodexLLM(LLMInterface):
         # ``llm_timeout`` / the per-operation override; the literal below is only
         # the unconfigured fallback.
         self._request_timeout = self.timeout or _DEFAULT_CODEX_TIMEOUT
-        from hindsight_api.engine.providers.codex_output_cap import CodexOutputCap  # fork: codex-output-cap
+        from hindsight_api.engine.providers.codex_output_cap import attempt_scan_factory  # fork: codex-output-cap
 
-        self._fork_output_cap = CodexOutputCap.from_env()  # fork: codex-output-cap (a bad value fails here)
+        self._fork_attempt_scan = attempt_scan_factory()  # fork: codex-output-cap (a bad value fails here)
 
         # HTTP session for SSE streaming, one per event loop. Its timeouts are
         # per-phase (per socket read), so they bound a *silent* backend only — a
@@ -1018,23 +1003,19 @@ class CodexLLM(LLMInterface):
         did), including a ``\\r\\n`` that straddles two chunks. aiohttp's own line
         reader is not used: it raises on a line longer than its buffer limit.
         """
-        from hindsight_api.engine.llm_attempt_usage import begin_codex_attempt  # fork: attempt-usage
-
-        attempt = begin_codex_attempt()  # fork: attempt-usage
-        deltas = self._fork_output_cap.begin_attempt()  # fork: codex-output-cap
+        attempt = self._fork_attempt_scan()  # fork: codex-output-cap; fork: attempt-usage
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         pending: list[str] = []
         seen_chars = 0
         async for chunk in response.content.iter_any():
             text = decoder.decode(chunk)
             seen_chars += len(text)
-            attempt.feed(text)  # fork: attempt-usage
+            attempt.feed(text, seen_chars)  # fork: codex-output-cap; fork: attempt-usage
             if seen_chars > _MAX_SSE_BODY_CHARS:
                 raise CodexRunawayStreamError(
                     f"Codex response exceeded {_MAX_SSE_BODY_CHARS} characters without completing; "
                     "abandoning the stream"
                 )
-            deltas.feed(text)  # fork: codex-output-cap
             if not _LINE_BREAK_RE.search(text):
                 # Still inside one line: defer the join so a long line costs linear time.
                 pending.append(text)

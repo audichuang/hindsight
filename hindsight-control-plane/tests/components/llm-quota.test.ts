@@ -10,6 +10,7 @@ import {
   type ProviderQuota,
 } from "@/lib/fork/llm-quota";
 import { QUOTA_LOAD_ERROR } from "@/lib/fork/fork-request";
+import { stubFetch } from "./fork-test-helpers";
 
 const EN_RESET = {
   daysHours: "in {d}d {h}h",
@@ -72,11 +73,8 @@ describe("formatResetIn", () => {
     expect(formatResetIn("2026-10-15T10:00:00Z", now, EN_RESET)).toBe("");
     expect(formatResetIn("not-a-date", now, EN_RESET)).toBe("");
   });
-});
 
-describe("formatResetIn in another language", () => {
-  it("uses the caller's templates", () => {
-    const now = new Date("2026-10-15T10:00:00Z");
+  it("uses the caller's templates in another language", () => {
     expect(formatResetIn("2026-10-20T09:00:00Z", now, ZH_RESET)).toBe("4 天 23 小時後");
     expect(formatResetIn("2026-10-15T13:20:00Z", now, ZH_RESET)).toBe("3 小時 20 分後");
   });
@@ -91,57 +89,32 @@ describe("formatBalance", () => {
 
 describe("fetchLLMQuota", () => {
   it("returns null when the endpoint is absent", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("{}", { status: 404 }))
-    );
+    stubFetch(404);
     await expect(fetchLLMQuota("bank-a")).resolves.toBeNull();
   });
 
   it("requests the bank quota path", async () => {
-    const spy = vi.fn(
-      async (..._args: [RequestInfo | URL, RequestInit?]) =>
-        new Response(JSON.stringify({ bank_id: "bank a", scope: "server", providers: [] }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        })
-    );
-    vi.stubGlobal("fetch", spy);
+    const spy = stubFetch(200, { bank_id: "bank a", scope: "server", providers: [] });
     const data = await fetchLLMQuota("bank a");
     expect(data?.providers).toEqual([]);
     expect(String(spy.mock.calls[0][0])).toContain("/api/banks/bank%20a/llm-requests/quota");
   });
 
   it("throws on other non-2xx responses", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("{}", { status: 500 }))
-    );
+    stubFetch(500);
     await expect(fetchLLMQuota("bank-a")).rejects.toThrow("status 500");
   });
-});
 
-describe("fetchLLMQuota errors", () => {
   it("keeps the proxy's error text", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () => new Response(JSON.stringify({ error: "bank not readable" }), { status: 403 })
-      )
-    );
+    stubFetch(403, { error: "bank not readable" });
     await expect(fetchLLMQuota("bank")).rejects.toMatchObject({
       status: 403,
       detail: "bank not readable",
     });
   });
-});
 
-describe("fetchLLMQuota generic proxy error", () => {
   it("drops the proxy's generic load-error text, which repeats the card's own message", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ error: QUOTA_LOAD_ERROR }), { status: 500 }))
-    );
+    stubFetch(500, { error: QUOTA_LOAD_ERROR });
     await expect(fetchLLMQuota("bank")).rejects.toMatchObject({ status: 500, detail: null });
   });
 });

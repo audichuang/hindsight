@@ -33,10 +33,8 @@ import json
 import logging
 from collections.abc import Callable
 from contextvars import ContextVar, Token
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
-
-from .sse_delta_scan import DeltaEventScanner
 
 logger = logging.getLogger(__name__)
 
@@ -101,37 +99,21 @@ def close_call_ledger() -> None:
         _ledger.set(None)
 
 
-# --- attempts (hooked into codex_llm._iter_sse_lines) --------------------------------------------
+# --- attempts (opened from codex_llm._iter_sse_lines) --------------------------------------------
 
 
-class AttemptMeter:
-    """Counts the delta events of one Codex attempt from the raw body. Inert when no ledger is open.
+def open_codex_attempt() -> _Attempt | None:
+    """Record that a Codex request is being streamed. None when no ledger is open (the feature is off).
 
-    Fed every decoded chunk as it arrives, before the size guard can abandon the stream, so the
-    chunk that trips the guard is counted too. Lines are split and matched by the scanner the
-    output cap uses (``sse_delta_scan``), so both count the same events.
+    The caller (``providers/codex_output_cap.CodexAttemptScan``) adds the attempt's delta events as
+    the chunks arrive, before the size guard can abandon the stream.
     """
-
-    __slots__ = ("_attempt", "_scanner")
-
-    def __init__(self, attempt: _Attempt | None) -> None:
-        self._attempt = attempt
-        self._scanner = DeltaEventScanner()
-
-    def feed(self, text: str) -> None:
-        if self._attempt is None:
-            return
-        self._attempt.delta_events += self._scanner.feed(text)
-
-
-def begin_codex_attempt() -> AttemptMeter:
-    """Record that a Codex request is being streamed; its lines go through the returned meter."""
     ledger = _ledger.get()
     if ledger is None:
-        return AttemptMeter(None)
+        return None
     attempt = _Attempt()
     ledger.attempts.append(attempt)
-    return AttemptMeter(attempt)
+    return attempt
 
 
 # --- usage (hooked into llm_trace.stash_response_usage) ------------------------------------------
@@ -159,12 +141,19 @@ def note_stashed_usage(usage: _Usage | None) -> None:
 # --- the trace row (decorates LLMTraceRecorder.record_llm_call) ----------------------------------
 
 
-@dataclass(frozen=True)
-class _Totals:
+@dataclass
+class _TokenCounts:
+    """The four token counts of a row (and of an attempt the success row stands for)."""
+
     input_tokens: int
     output_tokens: int
     cached_tokens: int
     thoughts_tokens: int
+
+
+@dataclass(frozen=True)
+class _Totals:
+    tokens: _TokenCounts
     estimated: bool
     cache_write_tokens: int | None
 
@@ -208,21 +197,15 @@ def _totals(attempts: list[_Attempt], messages: object) -> _Totals | None:
     if len(counted) == 1 and not estimated:
         return None  # one attempt with provider counts: the row is already right
     return _Totals(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cached_tokens=cached_tokens,
-        thoughts_tokens=thoughts_tokens,
+        tokens=_TokenCounts(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_tokens=cached_tokens,
+            thoughts_tokens=thoughts_tokens,
+        ),
         estimated=estimated,
         cache_write_tokens=sum(write_counts) if write_counts else None,
     )
-
-
-@dataclass
-class _RowUsage:
-    input_tokens: int
-    output_tokens: int
-    cached_tokens: int
-    thoughts_tokens: int
 
 
 def _with_success_row_as_last(attempts: list[_Attempt], kwargs: dict[str, Any], call_usage: object) -> list[_Attempt]:
@@ -232,7 +215,7 @@ def _with_success_row_as_last(attempts: list[_Attempt], kwargs: dict[str, Any], 
 
     last = attempts[-1]
     breakdown = call_usage if isinstance(call_usage, CallUsage) else None
-    usage = _RowUsage(
+    usage = _TokenCounts(
         input_tokens=kwargs.get("input_tokens") or 0,
         output_tokens=kwargs.get("output_tokens") or 0,
         cached_tokens=kwargs.get("cached_tokens") or 0,
@@ -269,10 +252,7 @@ def _folded_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     fields["usage_source"] = "estimate" if totals.estimated else "provider"
     return {
         **kwargs,
-        "input_tokens": totals.input_tokens,
-        "output_tokens": totals.output_tokens,
-        "cached_tokens": totals.cached_tokens,
-        "thoughts_tokens": totals.thoughts_tokens,
+        **asdict(totals.tokens),
         FORK_USAGE_KWARG: CallUsage(**fields),
     }
 

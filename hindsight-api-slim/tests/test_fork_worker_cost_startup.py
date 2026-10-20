@@ -5,13 +5,13 @@ The worker never calls ``register_llm_cost_routes``, so without this hook a typo
 worker writes LLM trace rows too, so every process that makes LLM calls must agree on the settings.
 """
 
-import os
 from pathlib import Path
 
 import pytest
 
 from hindsight_api.config import clear_config_cache
 from hindsight_api.engine.llm_cost import load_cost_settings
+from tests.fork_helpers import cost_env_cleared
 
 WORKER_SRC = (Path(__file__).resolve().parent.parent / "hindsight_api" / "worker" / "main.py").read_text(
     encoding="utf-8"
@@ -22,14 +22,7 @@ HOOK_CALL = "    load_cost_settings()  # fork: cost-accounting"
 
 @pytest.fixture(autouse=True)
 def _clean_cost_env(monkeypatch):
-    for name in list(os.environ):
-        if name.startswith("HINDSIGHT_API_LLM_COST_"):
-            monkeypatch.delenv(name)
-    clear_config_cache()
-    load_cost_settings.cache_clear()
-    yield
-    clear_config_cache()
-    load_cost_settings.cache_clear()
+    yield from cost_env_cleared(monkeypatch)
 
 
 def test_worker_main_keeps_the_startup_validation_hook():

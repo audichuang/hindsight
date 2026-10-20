@@ -1,24 +1,21 @@
-"""fork: attempt-usage, codex-output-cap — both delta counters split lines the way the stream parser does.
+"""fork: attempt-usage; fork: codex-output-cap — both delta counters split lines the way the stream parser does.
 
 ``CodexLLM._iter_sse_lines`` ends a line on ``\\n``, ``\\r\\n`` or a lone ``\\r`` (``str.splitlines``).
 The output cap and the attempt meter first split on ``\\n`` only, so a body with CR-only line ends
 reached the parser intact while neither counted a single delta: the cap could be bypassed and the
-meter's runaway estimate was 0. Both now share ``sse_delta_scan``.
+meter's runaway estimate was 0. Both now read one count per attempt (``CodexAttemptScan``).
 """
 
 import json
-import os
 from collections.abc import AsyncIterator
-from unittest.mock import patch
 
 import pytest
 
-from hindsight_api.config import clear_config_cache
 from hindsight_api.engine import llm_attempt_usage, llm_trace
-from hindsight_api.engine.llm_cost import load_cost_settings
 from hindsight_api.engine.providers.codex_llm import CodexLLM, CodexRunawayStreamError
 from hindsight_api.engine.sse_delta_scan import DeltaEventScanner
 from tests.codex_stream_stub import CodexReply, stub_codex_stream
+from tests.fork_helpers import build_codex, cost_env_cleared, enable_cost
 
 CAP_ENV = "HINDSIGHT_API_CODEX_MAX_OUTPUT_DELTAS"
 _BREAKS = {"lf": "\n", "cr": "\r", "crlf": "\r\n"}
@@ -65,28 +62,13 @@ class _FakeResponse:
         self.content = _FakeContent(chunks)
 
 
-def _build_llm() -> CodexLLM:
-    with (
-        patch.object(CodexLLM, "_load_codex_auth", return_value=("token", "account")),
-        patch.object(CodexLLM, "_load_codex_refresh_token", return_value=None),
-    ):
-        return CodexLLM(provider="openai-codex", api_key="", base_url="https://chatgpt.com/backend-api", model="m")
-
-
 async def _drain(llm: CodexLLM, chunks: list[str]) -> list[str]:
     return [line async for line in llm._iter_sse_lines(_FakeResponse(chunks))]  # type: ignore[arg-type]
 
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    for name in list(os.environ):
-        if name.startswith("HINDSIGHT_API_LLM_COST_") or name == CAP_ENV:
-            monkeypatch.delenv(name)
-    clear_config_cache()
-    load_cost_settings.cache_clear()
-    yield
-    clear_config_cache()
-    load_cost_settings.cache_clear()
+    yield from cost_env_cleared(monkeypatch, CAP_ENV)
 
 
 _CASES = [
@@ -117,7 +99,7 @@ def _case_chunks(deltas: int, style: str, how: str) -> list[str]:
 @pytest.mark.parametrize(("style", "how"), _CASES)
 async def test_the_cap_sees_every_line_ending_the_parser_sees(monkeypatch, style, how):
     monkeypatch.setenv(CAP_ENV, "3")
-    llm = _build_llm()
+    llm = build_codex("m")
     lines = await _drain(llm, _case_chunks(3, style, how))
     # The parser got all three deltas, so the counter must agree there were exactly three...
     assert lines.count("event: response.output_text.delta") == 3
@@ -131,7 +113,7 @@ async def test_a_cr_only_reply_cannot_bypass_the_cap_through_call(monkeypatch):
     # The reviewer's reproduction: with cap 1, two deltas separated by LF raised but the same
     # events separated by CR completed as a success.
     monkeypatch.setenv(CAP_ENV, "1")
-    llm = _build_llm()
+    llm = build_codex("m")
     body = _body(2, "\r") + "event: response.completed\rdata: {}\r\rdata: [DONE]\r\r"
     try:
         with stub_codex_stream(llm, CodexReply(text=body)), pytest.raises(CodexRunawayStreamError):
@@ -146,10 +128,8 @@ async def test_a_cr_only_reply_cannot_bypass_the_cap_through_call(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("style", "how"), _CASES)
 async def test_the_meter_counts_every_line_ending_the_parser_sees(monkeypatch, style, how):
-    monkeypatch.setenv("HINDSIGHT_API_LLM_COST_ENABLED", "true")
-    clear_config_cache()
-    load_cost_settings.cache_clear()
-    llm = _build_llm()
+    enable_cost(monkeypatch)
+    llm = build_codex("m")
     token = llm_trace.set_response_usage(None)  # opens the call's ledger
     try:
         await _drain(llm, _case_chunks(5, style, how))
@@ -163,12 +143,21 @@ async def test_the_meter_counts_every_line_ending_the_parser_sees(monkeypatch, s
 # --- the shared scanner ----------------------------------------------------------------------------
 
 
-def test_one_scanner_serves_both_counters():
-    # A single definition of "output delta event", so the cap and the cost estimate cannot drift.
-    assert llm_attempt_usage.DeltaEventScanner is DeltaEventScanner
-    from hindsight_api.engine.providers import codex_output_cap
-
-    assert codex_output_cap.DeltaEventScanner is DeltaEventScanner
+@pytest.mark.asyncio
+async def test_one_scan_feeds_the_meter_and_the_cap(monkeypatch):
+    # One count per attempt: the meter records exactly the deltas the cap saw, including the chunk that trips it.
+    monkeypatch.setenv(CAP_ENV, "3")
+    enable_cost(monkeypatch)
+    llm = build_codex("m")
+    token = llm_trace.set_response_usage(None)
+    try:
+        with pytest.raises(CodexRunawayStreamError):
+            await _drain(llm, [_body(4, "\n")])
+        ledger = llm_attempt_usage._ledger.get()
+        assert ledger is not None
+        assert [a.delta_events for a in ledger.attempts] == [4]
+    finally:
+        llm_trace.reset_response_usage(token)
 
 
 def test_a_crlf_split_between_chunks_counts_once():

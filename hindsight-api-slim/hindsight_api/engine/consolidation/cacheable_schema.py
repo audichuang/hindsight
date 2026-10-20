@@ -74,29 +74,25 @@ def _drop_per_batch_keywords(schema: dict[str, Any]) -> dict[str, Any]:
     return schema
 
 
-def with_batch_invariant_schema(constrained: type[_M]) -> type[_M]:
-    """``constrained`` for validation; its JSON schema without the per-batch fact-id ``enum`` and ``maxItems``.
+def cacheable_response_model(response_model: type[_M], llm_config: Any, config: "HindsightConfig") -> type[_M]:
+    """The consolidation hook: ``response_model`` unchanged unless its schema is prompt text.
 
-    Providers render the schema with ``response_format.model_json_schema(...)`` and parse
-    with ``response_format.model_validate(...)``; only the former changes. The ``enum`` is
-    schema-only upstream too, the creates cap (``max_length``) keeps rejecting an over-cap
-    response, and batch-invariant hints such as ``minItems: 1`` stay in the schema.
+    When it is, the result validates with ``response_model`` but renders its JSON schema without the
+    per-batch fact-id ``enum`` and ``maxItems``. Providers render the schema with
+    ``response_format.model_json_schema(...)`` and parse with ``response_format.model_validate(...)``;
+    only the former changes. The ``enum`` is schema-only upstream too, the creates cap (``max_length``)
+    keeps rejecting an over-cap response, and batch-invariant hints such as ``minItems: 1`` stay in the schema.
     """
+    if not schema_is_prompt_text(llm_config, config):
+        return response_model
 
-    parent: Any = constrained  # a runtime class; static checkers reject a TypeVar as a base
+    parent: Any = response_model  # a runtime class; static checkers reject a TypeVar as a base
 
     class _BatchInvariantSchema(parent):
         @classmethod
         def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
             schema = _drop_per_batch_keywords(super().model_json_schema(*args, **kwargs))
-            schema["title"] = constrained.__name__
+            schema["title"] = response_model.__name__
             return schema
 
     return cast("type[_M]", _BatchInvariantSchema)
-
-
-def cacheable_response_model(response_model: type[_M], llm_config: Any, config: "HindsightConfig") -> type[_M]:
-    """The consolidation hook: ``response_model`` unchanged unless its schema is prompt text."""
-    if not schema_is_prompt_text(llm_config, config):
-        return response_model
-    return with_batch_invariant_schema(response_model)

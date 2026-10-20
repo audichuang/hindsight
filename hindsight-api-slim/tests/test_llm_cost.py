@@ -6,7 +6,6 @@ moves a price fails here loudly instead of silently.
 """
 
 import logging
-import os
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -43,6 +42,7 @@ from hindsight_api.engine.llm_cost import (
     trace_usage_info,
     xai_oauth_usage_kwargs,
 )
+from tests.fork_helpers import cost_env_cleared
 
 PACKAGE_ROOT = Path(hindsight_api.__file__).parent
 ENV_PREFIX = "HINDSIGHT_API_LLM_COST_"
@@ -55,12 +55,7 @@ TOL = 1e-9
 @pytest.fixture(autouse=True)
 def _clean_cost_env(monkeypatch):
     """No feature variable leaks in from the shell, and the settings cache is fresh for every test."""
-    for name in list(os.environ):
-        if name.startswith(ENV_PREFIX):
-            monkeypatch.delenv(name)
-    load_cost_settings.cache_clear()
-    yield
-    load_cost_settings.cache_clear()
+    yield from cost_env_cleared(monkeypatch)
 
 
 def _marked(**fields) -> StoredUsage:
@@ -391,6 +386,15 @@ def test_codex_cache_writes_tells_a_reported_zero_from_none_reported(details, ex
     event = {"type": "response.completed", "response": {"usage": {"input_tokens": 50, "input_tokens_details": details}}}
     assert llm_cost._codex_cache_writes(event) == expected
     assert llm_cost._codex_cache_writes({"response": "not-a-dict"}) is None
+
+
+def test_codex_cache_writes_ignores_malformed_sibling_fields():
+    # A malformed sibling block does not hide a reported count, and a negative count reads as zero.
+    for sibling in (None, "x", 3):
+        usage = {"input_tokens": 50, "cost_details": sibling, "input_tokens_details": {"cache_write_tokens": 11}}
+        assert llm_cost._codex_cache_writes({"response": {"usage": usage}}) == 11
+    usage = {"input_tokens": 50, "input_tokens_details": {"cache_write_tokens": -2}}
+    assert llm_cost._codex_cache_writes({"response": {"usage": usage}}) == 0
 
 
 def test_codex_cache_writes_reads_the_explicit_zero_the_chatgpt_backend_sends():

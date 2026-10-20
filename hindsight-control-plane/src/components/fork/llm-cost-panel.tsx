@@ -22,7 +22,8 @@ import {
 } from "@/components/ui/table";
 import type { LLMRequestEntry } from "@/lib/api";
 import { LLMQuotaCard } from "@/components/fork/llm-quota-card";
-import { ForkRequestError } from "@/lib/fork/fork-request";
+import { ForkLoadError } from "@/components/fork/fork-load-error";
+import { errorDetailOf } from "@/lib/fork/fork-request";
 import { useFeatures } from "@/lib/features-context";
 import {
   browserTimeZone,
@@ -269,11 +270,7 @@ export function LLMCostPanel({ bankId }: { bankId: string }) {
       .catch((error: unknown) => {
         if (cancelled) return;
         // The proxy's error text (e.g. an unknown time zone, a tag-scoped key) says why; keep it.
-        setLoad({
-          key,
-          status: "error",
-          detail: error instanceof ForkRequestError ? error.detail : null,
-        });
+        setLoad({ key, status: "error", detail: errorDetailOf(error) });
       });
     return () => {
       cancelled = true;
@@ -306,10 +303,7 @@ export function LLMCostPanel({ bankId }: { bankId: string }) {
         <CardContent className="space-y-4">
           {current === null && <p className="text-sm text-muted-foreground">{s.loading}</p>}
           {current?.status === "error" && (
-            <p className="text-sm text-destructive">
-              {s.loadError}
-              {current.detail && <span className="font-mono"> ({current.detail})</span>}
-            </p>
+            <ForkLoadError message={s.loadError} detail={current.detail} />
           )}
           {current?.status === "ready" && <CostSummaryBody data={current.data} s={s} />}
         </CardContent>

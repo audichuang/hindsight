@@ -5,7 +5,6 @@ Upstream ``_ChatUsage`` gains ``cost_in_usd_ticks``; both ``XaiOAuthLLM`` span c
 span kwargs must match upstream exactly. The source-text test fails if a hook is lost in a rebase.
 """
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +16,7 @@ from hindsight_api.engine.llm_cost import load_cost_settings
 from hindsight_api.engine.llm_trace import LLMRequestRecord, LLMTraceRecorder
 from hindsight_api.engine.providers.xai_oauth_llm import _ChatCompletion
 from tests.test_xai_oauth_llm import _make_llm, _ok_reply
+from tests.fork_helpers import cost_env_cleared
 
 PROVIDER_SRC = (
     Path(__file__).resolve().parent.parent / "hindsight_api" / "engine" / "providers" / "xai_oauth_llm.py"
@@ -53,14 +53,7 @@ UPSTREAM_SPAN_KEYS = {
 
 @pytest.fixture(autouse=True)
 def _clean_cost_env(monkeypatch):
-    for name in list(os.environ):
-        if name.startswith("HINDSIGHT_API_LLM_COST_"):
-            monkeypatch.delenv(name)
-    clear_config_cache()
-    load_cost_settings.cache_clear()
-    yield
-    clear_config_cache()
-    load_cost_settings.cache_clear()
+    yield from cost_env_cleared(monkeypatch)
 
 
 class _KwargsRecorder:

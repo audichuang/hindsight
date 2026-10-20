@@ -19,6 +19,7 @@ import pytest
 from hindsight_api.engine.llm_trace import LLMTraceContext, reset_trace_context, set_trace_context
 from hindsight_api.engine.providers.codex_llm import CodexLLM
 from tests.codex_stream_stub import CodexReply, stub_codex_stream, stub_codex_stream_with
+from tests.fork_helpers import build_codex
 
 _MESSAGES = [
     {"role": "system", "content": "You are a memory agent."},
@@ -27,17 +28,7 @@ _MESSAGES = [
 
 
 def _build_llm(extra_body: dict[str, Any] | None = None) -> CodexLLM:
-    with (
-        patch.object(CodexLLM, "_load_codex_auth", return_value=("token", "account")),
-        patch.object(CodexLLM, "_load_codex_refresh_token", return_value=None),
-    ):
-        return CodexLLM(
-            provider="openai-codex",
-            api_key="ignored",
-            base_url="https://chatgpt.com/backend-api",
-            model="gpt-5.6-luna",
-            extra_body=extra_body,
-        )
+    return build_codex("gpt-5.6-luna", extra_body=extra_body)
 
 
 @contextmanager

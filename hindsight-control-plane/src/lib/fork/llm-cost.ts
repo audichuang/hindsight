@@ -3,8 +3,7 @@
 // hindsight_api/engine/llm_cost.py. Endpoints are hidden from OpenAPI, so these
 // types are maintained by hand.
 
-import { withBasePath } from "@/lib/base-path";
-import { errorDetail, ForkRequestError } from "@/lib/fork/fork-request";
+import { fetchJsonOrNull } from "@/lib/fork/fork-request";
 
 export type CostPeriod = "1d" | "7d" | "30d";
 export type BillingKind = "metered" | "plan" | "local";
@@ -90,25 +89,14 @@ export interface LLMRowCostResponse {
   items: Record<string, RowCost>;
 }
 
-/** Returns null when the endpoint is absent (404), which means the feature is off. */
-async function fetchJsonOrNull<T>(path: string): Promise<T | null> {
-  const response = await fetch(withBasePath(path), { method: "GET" });
-  if (response.status === 404) {
-    return null;
-  }
-  if (!response.ok) {
-    throw new ForkRequestError(response.status, await errorDetail(response), "cost");
-  }
-  return (await response.json()) as T;
-}
-
 export function fetchLLMCostSummary(
   bankId: string,
   options: { period: CostPeriod; tz: string }
 ): Promise<LLMCostSummaryResponse | null> {
   const params = new URLSearchParams({ period: options.period, tz: options.tz });
   return fetchJsonOrNull<LLMCostSummaryResponse>(
-    `/api/banks/${encodeURIComponent(bankId)}/llm-requests/cost?${params.toString()}`
+    `/api/banks/${encodeURIComponent(bankId)}/llm-requests/cost?${params.toString()}`,
+    "cost"
   );
 }
 
@@ -118,7 +106,8 @@ export function fetchLLMRowCosts(
 ): Promise<LLMRowCostResponse | null> {
   const params = new URLSearchParams({ ids: ids.join(",") });
   return fetchJsonOrNull<LLMRowCostResponse>(
-    `/api/banks/${encodeURIComponent(bankId)}/llm-requests/cost/rows?${params.toString()}`
+    `/api/banks/${encodeURIComponent(bankId)}/llm-requests/cost/rows?${params.toString()}`,
+    "cost"
   );
 }
 

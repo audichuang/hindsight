@@ -1,24 +1,18 @@
-# fork: attempt-usage, codex-output-cap
+# fork: attempt-usage; fork: codex-output-cap
 """Count the output delta events in a Codex SSE body as it arrives in chunks.
 
-Shared by the attempt meter (``llm_attempt_usage``, output-token estimate for cost) and the
-output cap (``providers/codex_output_cap``, runaway guard), so both count exactly the same
-events. Lines are split by the rule ``CodexLLM._iter_sse_lines`` uses, ``str.splitlines``: a
+Used once per Codex attempt by ``providers/codex_output_cap.CodexAttemptScan``, whose count
+feeds both the output cap (runaway guard) and the attempt meter of ``llm_attempt_usage``
+(output-token estimate for cost), so both see exactly the same events. Lines are split by the rule ``CodexLLM._iter_sse_lines`` uses, ``str.splitlines``: a
 lone ``\\r`` ends a line as well as ``\\n`` and ``\\r\\n``. Splitting on ``\\n`` only (what both
 counters did first) let a body with CR-only line ends reach the parser intact while counting
 no event at all, so the cap could be bypassed.
 
 A ``\\r\\n`` split across two chunks ends the line at the ``\\r``; the ``\\n`` that opens the next
 chunk then yields an empty line, which is never an event line, so nothing is counted twice.
-
-Not imported from ``codex_llm``: ``llm_trace`` imports ``llm_attempt_usage``, which imports
-this module, and ``codex_llm`` imports ``llm_trace``.
 """
 
 from __future__ import annotations
-
-# The characters ``str.splitlines`` breaks a line on (the same set as ``codex_llm._LINE_BREAK_RE``).
-_LINE_BREAKS = frozenset("\n\r\x0b\x0c\x1c\x1d\x1e\x85  ")
 
 # An event-name line is far shorter than this; a longer partial line only needs its start.
 _LINE_PREFIX_KEPT = 256
@@ -43,7 +37,9 @@ class DeltaEventScanner:
             return 0
         joined = self._carry + text
         lines = joined.splitlines()
-        if joined[-1] in _LINE_BREAKS:
+        # The last character ends a line exactly when ``str.splitlines`` alone breaks on it, so the
+        # break set is the parser's own (``codex_llm._LINE_BREAK_RE`` lists the same characters).
+        if joined[-1:].splitlines() == [""]:
             self._carry = ""
         else:
             self._carry = lines.pop()[:_LINE_PREFIX_KEPT]

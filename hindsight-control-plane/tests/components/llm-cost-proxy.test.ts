@@ -6,7 +6,8 @@ vi.mock("@/lib/hindsight-client", () => ({
   getDataplaneHeaders: () => ({}),
 }));
 
-import { COST_LOAD_ERROR, QUOTA_LOAD_ERROR, proxyLLMCost } from "@/lib/fork/llm-cost-proxy";
+import { COST_LOAD_ERROR, QUOTA_LOAD_ERROR } from "@/lib/fork/fork-request";
+import { proxyLLMCost } from "@/lib/fork/llm-cost-proxy";
 import { GET as costGET } from "@/app/api/banks/[bankId]/llm-requests/cost/route";
 import { GET as rowsGET } from "@/app/api/banks/[bankId]/llm-requests/cost/rows/route";
 import { GET as quotaGET } from "@/app/api/banks/[bankId]/llm-requests/quota/route";
