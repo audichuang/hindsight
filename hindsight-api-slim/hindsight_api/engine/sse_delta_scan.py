@@ -17,9 +17,6 @@ this module, and ``codex_llm`` imports ``llm_trace``.
 
 from __future__ import annotations
 
-# The characters ``str.splitlines`` breaks a line on (the same set as ``codex_llm._LINE_BREAK_RE``).
-_LINE_BREAKS = frozenset("\n\r\x0b\x0c\x1c\x1d\x1e\x85  ")
-
 # An event-name line is far shorter than this; a longer partial line only needs its start.
 _LINE_PREFIX_KEPT = 256
 
@@ -43,7 +40,9 @@ class DeltaEventScanner:
             return 0
         joined = self._carry + text
         lines = joined.splitlines()
-        if joined[-1] in _LINE_BREAKS:
+        # The last character ends a line exactly when ``str.splitlines`` alone breaks on it, so the
+        # break set is the parser's own (``codex_llm._LINE_BREAK_RE`` lists the same characters).
+        if joined[-1:].splitlines() == [""]:
             self._carry = ""
         else:
             self._carry = lines.pop()[:_LINE_PREFIX_KEPT]

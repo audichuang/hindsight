@@ -631,32 +631,17 @@ def claude_code_usage_kwargs(raw_usage: object) -> dict[str, CallUsage]:
 _codex_pending: ContextVar[tuple[object, CallUsage] | None] = ContextVar("fork_codex_usage", default=None)
 
 
-class _CodexCostResponse(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    usage: _UsageExtras | None = None
-
-
-class _CodexCostEvent(BaseModel):
-    """The part of a Codex ``response.completed`` event the cost hook reads: ``response.usage``."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    response: _CodexCostResponse | None = None
-
-
 def _codex_cache_writes(event: object) -> int | None:
     """``input_tokens_details.cache_write_tokens`` of a raw Codex event; None when the backend did not send it.
 
     Read here rather than from the provider's own usage model: that model reads a missing count as 0, which
     would record "no cache writes" for a backend that simply does not report them (no breakdown is the truth).
     """
-    try:
-        parsed = _CodexCostEvent.model_validate(event)
-    except ValidationError:
+    response = event.get("response") if isinstance(event, dict) else None
+    usage = response.get("usage") if isinstance(response, dict) else None
+    if usage is None:
         return None
-    usage = parsed.response.usage if parsed.response is not None else None
-    return usage.input_tokens_details.cache_write_tokens if usage is not None else None
+    return _first_reported(_usage_extras(usage).input_tokens_details.cache_write_tokens)
 
 
 def note_codex_usage(result: object, event: object) -> None:
