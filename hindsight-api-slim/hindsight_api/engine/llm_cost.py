@@ -545,11 +545,16 @@ def _anthropic_breakdown(usage: object) -> CallUsage | None:
     )
 
 
-def _first_positive(*values: int | None) -> int:
+def _first_reported(*values: int | None) -> int | None:
+    """The first positive count; else 0 when any field reported 0; None when no field was sent.
+
+    None is "no breakdown", not "no writes": a provider that does not report cache writes must not
+    be recorded as having written none (the panel's lower-bound note depends on telling them apart).
+    """
     for value in values:
         if value is not None and value > 0:
             return value
-    return 0
+    return 0 if any(value is not None for value in values) else None
 
 
 def _ticks_cost(ticks: int | None) -> float | None:
@@ -640,18 +645,18 @@ class _CodexCostEvent(BaseModel):
     response: _CodexCostResponse | None = None
 
 
-def _codex_cache_writes(event: object) -> int:
-    """``input_tokens_details.cache_write_tokens`` of a raw Codex event; 0 when it is absent or unreadable.
+def _codex_cache_writes(event: object) -> int | None:
+    """``input_tokens_details.cache_write_tokens`` of a raw Codex event; None when the backend did not send it.
 
-    Read here because the provider's own usage model (upstream's) does not carry the field.
+    Read here rather than from the provider's own usage model: that model reads a missing count as 0, which
+    would record "no cache writes" for a backend that simply does not report them (no breakdown is the truth).
     """
     try:
         parsed = _CodexCostEvent.model_validate(event)
     except ValidationError:
-        return 0
+        return None
     usage = parsed.response.usage if parsed.response is not None else None
-    writes = usage.input_tokens_details.cache_write_tokens if usage is not None else None
-    return writes or 0
+    return usage.input_tokens_details.cache_write_tokens if usage is not None else None
 
 
 def note_codex_usage(result: object, event: object) -> None:
@@ -692,7 +697,7 @@ def openai_compatible_usage_kwargs(provider: str, base_url: str | None, response
             return CallUsage(billing_hint=hint, usage_source="estimate")
         extras = _usage_extras(usage)
         return CallUsage(
-            cache_write_tokens=_first_positive(
+            cache_write_tokens=_first_reported(
                 extras.prompt_tokens_details.cache_write_tokens,
                 extras.prompt_tokens_details.cache_creation_input_tokens,
                 extras.cache_creation_input_tokens,
@@ -727,7 +732,7 @@ def openai_responses_usage_kwargs(response: object) -> dict[str, CallUsage]:
             return CallUsage(usage_source="estimate")
         extras = _usage_extras(usage)
         return CallUsage(
-            cache_write_tokens=_first_positive(extras.input_tokens_details.cache_write_tokens),
+            cache_write_tokens=_first_reported(extras.input_tokens_details.cache_write_tokens),
             provider_cost_usd=_ticks_cost(extras.cost_in_usd_ticks),
             usage_source="provider",
         )

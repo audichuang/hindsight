@@ -360,7 +360,7 @@ def test_claude_code_unreadable_usage_and_cost_fall_back_to_estimate(monkeypatch
     assert usage.usage_source == "estimate"
 
 
-def _codex_event(cache_write_tokens: object) -> dict:
+def _codex_event(cache_write_tokens: int) -> dict:
     """A raw Codex ``response.completed`` event reporting ``cache_write_tokens``."""
     return {"response": {"usage": {"input_tokens_details": {"cache_write_tokens": cache_write_tokens}}}}
 
@@ -433,8 +433,19 @@ def test_openai_compatible_cache_write_fallbacks(monkeypatch):
     assert _usage_of(openai_compatible_usage_kwargs("openrouter", None, details)).cache_write_tokens == 300
     top = _completion(cache_creation_input_tokens=125)
     assert _usage_of(openai_compatible_usage_kwargs("openai", None, top)).cache_write_tokens == 125
+    zero = _completion(prompt_tokens_details={"cached_tokens": 0, "cache_write_tokens": 0})
+    assert _usage_of(openai_compatible_usage_kwargs("openrouter", None, zero)).cache_write_tokens == 0
     plain = _usage_of(openai_compatible_usage_kwargs("openai", None, _completion()))
-    assert plain.cache_write_tokens == 0  # the provider reported no writes: a known zero
+    assert plain.cache_write_tokens is None  # no write field sent: no breakdown, not "no writes"
+    assert "cache_write_tokens" not in plain.to_llm_info()["usage"]
+
+
+def test_openai_responses_without_a_cache_write_field_has_no_breakdown(monkeypatch):
+    _enable(monkeypatch)
+    absent = SimpleNamespace(usage=SimpleNamespace(input_tokens_details=SimpleNamespace(cached_tokens=10)))
+    assert _usage_of(openai_responses_usage_kwargs(absent)).cache_write_tokens is None
+    zero = SimpleNamespace(usage=SimpleNamespace(input_tokens_details=SimpleNamespace(cache_write_tokens=0)))
+    assert _usage_of(openai_responses_usage_kwargs(zero)).cache_write_tokens == 0
 
 
 @pytest.mark.parametrize(
@@ -510,7 +521,7 @@ def test_adapters_never_raise_on_garbage(monkeypatch, garbage):
     openai_compatible_usage_kwargs("openai", None, SimpleNamespace(usage=garbage))
     openai_responses_usage_kwargs(SimpleNamespace(usage=garbage))
     xai_oauth_usage_kwargs(garbage)
-    note_codex_usage(garbage, 1)
+    note_codex_usage(garbage, _codex_event(1))
 
 
 # --- Write path: the marker ---------------------------------------------------------------------

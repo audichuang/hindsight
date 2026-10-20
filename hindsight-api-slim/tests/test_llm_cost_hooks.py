@@ -464,13 +464,6 @@ _COMPAT_TOOLS_KEYS = _COMPAT_CALL_KEYS | {"tool_calls"}
 _RESPONSES_KEYS = _CODEX_CALL_KEYS | {"tool_calls"}
 
 _V2_ESTIMATE = {"v": 2, "usage_source": "estimate"}
-_V2_ZERO_WRITES = {
-    "v": 2,
-    "cache_write_tokens": 0,
-    "cache_write_5m_tokens": 0,
-    "cache_write_1h_tokens": 0,
-    "usage_source": "provider",
-}
 
 # (id, driver, expected llm_info.usage with the feature on, upstream span kwarg keys with it off)
 PROVIDER_CASES = [
@@ -510,7 +503,7 @@ PROVIDER_CASES = [
     pytest.param(
         "codex-call",
         lambda m: _codex_call_drive(m),
-        _V2_ZERO_WRITES,
+        {"v": 2, "usage_source": "provider"},  # CODEX_USAGE sends no cache_write_tokens: no breakdown, not 0
         _CODEX_CALL_KEYS,
         id="codex-call",
     ),
@@ -573,7 +566,8 @@ PROVIDER_CASES = [
             base_url="https://api.z.ai/api/coding/paas/v4",
             usage=_PLAIN_USAGE,
         ),
-        {**_V2_ZERO_WRITES, "billing_hint": "plan"},
+        # _PLAIN_USAGE sends no cache-write field: no breakdown, not zero writes
+        {"v": 2, "billing_hint": "plan", "usage_source": "provider"},
         _COMPAT_CALL_KEYS,
         id="zai-coding-plan-call",
     ),
