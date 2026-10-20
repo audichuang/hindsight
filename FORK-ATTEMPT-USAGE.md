@@ -16,7 +16,7 @@ Each attempt counts as follows:
 |---|---|---|
 | stashed provider usage (`response.completed`, `response.failed`) | that usage (the attempt's last stash) | provider |
 | stashed Codex chars/4 fallback (stream ended without usage) | that estimate | estimate |
-| no stash, at least one delta event received (runaway, deadline, dropped connection) | input: the call's messages at chars/4; output: one token per delta event | estimate |
+| no stash, at least one delta event received (runaway, deadline, dropped connection) | input: the provider-counted input of another attempt of the call (every attempt sends the same messages), else the call's messages at chars/4; cached: 0; output: one token per delta event | estimate |
 | no stash, no delta event (failed before the backend streamed) | nothing | — |
 | the attempt a success row is recorded from | the counts on that row | the row's own `usage_source` |
 
@@ -24,7 +24,9 @@ The row's `input_tokens`, `output_tokens`, `cached_tokens` and `thoughts_tokens`
 
 The row's duration already covers every attempt (the wrapper times the whole call), so the sums match it.
 
-One delta event per output token is an approximation: the Responses stream sends one `*.delta` event per token in practice. Reasoning summary deltas count as output, and encrypted reasoning is not streamed, so a runaway's reasoning tokens are not in the estimate.
+One delta event per output token was measured on the ChatGPT backend (gpt-6.1-sol, 2026-10-20: 4,776 `response.output_text.delta` events for 4,782 visible output tokens). Reasoning summary deltas count as output, and encrypted reasoning is not streamed, so a runaway's reasoning tokens are not in the estimate (15 of 4,797 output tokens at low effort in that check; more at `high`).
+
+The input estimate is exact when another attempt of the call has provider counts (a runaway followed by a success, the common case). When every counted attempt ran away, chars/4 is a lower bound: on the reference deployment's refresh calls (more than 100k characters of messages) provider input ran 1.24-1.75x chars/4 (p50 1.52), so the estimate is about a third low. The estimated attempt's cached tokens are 0, because whether it hit the prompt cache is unknown; its input is priced as uncached, an upper bound for that part of the cost.
 
 The returned `TokenUsage`, the metrics counters and the OTel spans still carry the last attempt only. Only the `llm_requests` row is folded.
 
@@ -54,7 +56,19 @@ Fork-owned files: `hindsight-api-slim/hindsight_api/engine/llm_attempt_usage.py`
 
 ## Related fix: the Codex stream ceiling
 
-The commit `fix(codex): stop abandoning long replies as runaway streams` (no marker; an upstream defect) raises `_MAX_SSE_BODY_CHARS` in `codex_llm.py` from 4 MiB to 16 MiB. The guard counts the raw SSE body, an estimated ~300 characters per output token (inferred from the reference deployment's traces), so 4 MiB ended replies at roughly 13-17k output tokens, which split-synthesis map calls of a mental-model refresh reach in normal operation. `CodexLLM` never sends `max_completion_tokens`, so nothing else bounds a Codex reply. Its regression test is `tests/test_fork_codex_sse_ceiling.py`. Drop the commit when upstream changes the guard.
+Two commits with no marker (an upstream defect), `fix(codex): stop abandoning long replies as runaway streams` and `fix(codex): set the stream ceiling to 8 MiB so it trips before the deadline`, raise `_MAX_SSE_BODY_CHARS` in `codex_llm.py` from 4 MiB to 8 MiB. Drop both when upstream changes the guard. Their regression test is `tests/test_fork_codex_sse_ceiling.py`.
+
+- The guard counts the raw SSE body. Measured on the ChatGPT backend (gpt-6.1-sol, 2026-10-20), each output token arrives as one delta event of about 287 characters, so 4 MiB ended replies at about 14.6k output tokens. Split-synthesis map calls of a mental-model refresh reach 13-14k in normal operation: in one week the longest successful one was 13.6k, and 31 failed as `exceeded 4194304 characters`. `CodexLLM` never sends `max_completion_tokens`, so nothing else bounds a Codex reply.
+- 8 MiB is about 29k output tokens, roughly twice the longest reply seen. That distribution was truncated at 4 MiB, so the margin is a judgment, not a measurement.
+- The ceiling must also trip before the per-attempt deadline. The deployment streams long refresh replies at 43-66 output tokens/s (p50-p95), so 8 MiB fills in about 440-680 s, inside the refresh lane's 900 s deadline. The first commit's 16 MiB (~58k tokens) needed 880-1350 s: the deadline, not the size, ended nearly every runaway, and a runaway call cost up to (retries + 1) x timeout plus backoff (2 x 900 s + 30 s with the deployment's `MENTAL_MODEL_REFRESH_LLM_MAX_RETRIES=1`) instead of 400-840 s. A runaway slower than ~32 tokens/s still reaches the deadline first.
+- Map calls of one refresh run concurrently (`asyncio.gather`), so two runaway maps overlap in time rather than adding up.
+
+### Not done
+
+- **A delta-count ceiling** (stop after N delta events instead of N characters) does not depend on the envelope size. It needs its own counter in `_iter_sse_lines`: the attempt meter here counts only with the cost flag on, and a safety bound must not depend on it. It is a behaviour change beyond the defect fix and waits for the user's approval.
+- **`max_output_tokens` through the lane's extra body**: a live check (2026-10-20) showed the backend accepts it and ends the stream with `response.incomplete` (`reason: max_output_tokens`; the cap includes reasoning tokens). `CodexLLM` does not treat `response.incomplete` as a failure, so it returns the truncated reply as a success. Setting the cap without first handling that event would hand a map call a silently cut claims list.
+- **Smaller map chunks** (`REFLECT_MAX_CONTEXT_TOKENS` is global and also bounds the agent loop and single-pass reflect; a map-only chunk size is new code) and **a terser map prompt** (upstream product behaviour, deliberately exhaustive since #3122) are left as suggestions for upstream.
+- **Stalls**: a call that streams almost nothing until the deadline (one `reflect_tool_call` in a week) is bound only by the deadline; no size or count guard sees it.
 
 ## Maintaining the patch
 
@@ -62,9 +76,9 @@ After each rebase, re-diff `llm_trace.py` (`set_response_usage`, `stash_response
 
 ### Rebasing onto a release that contains upstream #5693
 
-Upstream #5693 (`dcc3ee421`, "report real token usage for Codex, Claude Code and Anthropic") rewrites `codex_llm.py` around `_CodexStreamReply`. As of `origin/main` at the time of writing, `_iter_sse_lines` and the size guard are unchanged by it, so A6 and the ceiling commit apply as they are (checked with `git apply --3way --check`). What changes is how usage is stashed:
+Upstream #5693 (`dcc3ee421`, "report real token usage for Codex, Claude Code and Anthropic") rewrites `codex_llm.py` around `_CodexStreamReply`. On `origin/main` at `c5f585f8f` (which contains #5693), `_iter_sse_lines` and the size guard are unchanged by it: the branch's whole `codex_llm.py` diff (A6 and both ceiling commits) applies with a plain `git apply --check`. What changes is how usage is stashed:
 
 - `call()` stashes once per attempt, after the stream is parsed, a new `LLMResponseUsage` copied from `reply.usage` (or the chars/4 fallback when `reply.usage` is None). A runaway still raises before the stash, so the ledger's delta estimate still applies.
-- The usage object that is stashed is no longer the object `_usage_from_completed_event` built. So the identity check in `note_stashed_usage` (through `codex_usage_kwargs`) sees every stash as an estimate unless H16 of the cost accounting is re-anchored to note the stashed object: call `note_codex_usage(<the LLMResponseUsage passed to stash_response_usage>, <cache-write count>)` when `reply.usage is not None`. Without that, retried calls that never ran away are marked `estimate`.
+- The usage object that is stashed is no longer the object `_usage_from_completed_event` built. So the identity check in `note_stashed_usage` (through `codex_usage_kwargs`) sees every stash as an estimate unless H16 of the cost accounting is re-anchored to note the stashed object when `reply.usage is not None`: pass the `LLMResponseUsage` given to `stash_response_usage` as the first argument of `note_codex_usage`, and as the second whatever H16's current signature takes (see the H16 row of `FORK-COST-ACCOUNTING.md`). Since the cost-quota fixes that is the raw `response.completed` event, which the stash site of #5693 does not have: `_CodexStreamReply` has to keep it. Without the re-anchor, retried calls that never ran away are marked `estimate`.
 - `call_with_tools` no longer stashes. Its success row is still counted correctly (the success row is authoritative for its own attempt), but an earlier parse-failed attempt in that path has nothing to count. It has no parse retry today, so nothing is lost.
 - `test_fork_attempt_usage.py::test_parse_failure_retry_adds_both_provider_usages` fails if the H16 re-anchor is missing, and `test_codex_keeps_the_attempt_meter_hooks` fails if A6 is lost.
