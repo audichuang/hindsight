@@ -228,6 +228,7 @@ class _CodexInputDetails(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     cached_tokens: _CodexCount = 0
+    cache_write_tokens: _CodexCount = 0
 
 
 class _CodexOutputDetails(BaseModel):
