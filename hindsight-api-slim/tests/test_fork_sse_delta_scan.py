@@ -1,4 +1,4 @@
-"""fork: attempt-usage, codex-output-cap — both delta counters split lines the way the stream parser does.
+"""fork: attempt-usage; fork: codex-output-cap — both delta counters split lines the way the stream parser does.
 
 ``CodexLLM._iter_sse_lines`` ends a line on ``\\n``, ``\\r\\n`` or a lone ``\\r`` (``str.splitlines``).
 The output cap and the attempt meter first split on ``\\n`` only, so a body with CR-only line ends

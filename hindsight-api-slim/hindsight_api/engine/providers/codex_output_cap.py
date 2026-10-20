@@ -1,4 +1,4 @@
-# fork: codex-output-cap, attempt-usage
+# fork: codex-output-cap; fork: attempt-usage
 """One scan per Codex attempt: the output-delta cap and the attempt meter (``FORK-CODEX-OUTPUT-CAP.md``).
 
 ``CodexLLM`` never sends a token limit, so a backend that wedges into runaway generation is

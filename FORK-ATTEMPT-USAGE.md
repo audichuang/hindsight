@@ -50,7 +50,7 @@ Each line is marked `# fork: attempt-usage`.
 | A3 | same file, `stash_response_usage` | `note_stashed_usage(usage)` before the `set` |
 | A4 | same file, `reset_response_usage` | `close_call_ledger()` before the `reset` |
 | A5 | same file, `LLMTraceRecorder.record_llm_call` | the decorator `@fold_attempt_usage`. Every caller passes keywords (the tracing fan-out does); a positional call is passed through unfolded |
-| A6 | `hindsight-api-slim/hindsight_api/engine/providers/codex_llm.py`, `_iter_sse_lines` | shared with the output cap: `attempt = self._fork_attempt_scan()` before the decoder and `attempt.feed(text, seen_chars)` right after `seen_chars += len(text)`, both marked `# fork: codex-output-cap, attempt-usage` (C3 and C4 of `FORK-CODEX-OUTPUT-CAP.md`; the scan is built in `CodexLLM.__init__`, C2) |
+| A6 | `hindsight-api-slim/hindsight_api/engine/providers/codex_llm.py`, `_iter_sse_lines` | shared with the output cap: `attempt = self._fork_attempt_scan()` before the decoder and `attempt.feed(text, seen_chars)` right after `seen_chars += len(text)`, both marked `# fork: codex-output-cap; fork: attempt-usage` (C3 and C4 of `FORK-CODEX-OUTPUT-CAP.md`; the scan is built in `CodexLLM.__init__`, C2) |
 
 Fork-owned files: `hindsight-api-slim/hindsight_api/engine/llm_attempt_usage.py`, `hindsight-api-slim/hindsight_api/engine/providers/codex_output_cap.py` and `hindsight-api-slim/hindsight_api/engine/sse_delta_scan.py` (shared with `FORK-CODEX-OUTPUT-CAP.md`), `hindsight-api-slim/tests/test_fork_attempt_usage.py` (behaviour and hook-existence tests), and this file.
 

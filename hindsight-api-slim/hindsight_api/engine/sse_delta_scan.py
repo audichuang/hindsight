@@ -1,4 +1,4 @@
-# fork: attempt-usage, codex-output-cap
+# fork: attempt-usage; fork: codex-output-cap
 """Count the output delta events in a Codex SSE body as it arrives in chunks.
 
 Used once per Codex attempt by ``providers/codex_output_cap.CodexAttemptScan``, whose count

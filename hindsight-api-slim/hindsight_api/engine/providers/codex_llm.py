@@ -1003,14 +1003,14 @@ class CodexLLM(LLMInterface):
         did), including a ``\\r\\n`` that straddles two chunks. aiohttp's own line
         reader is not used: it raises on a line longer than its buffer limit.
         """
-        attempt = self._fork_attempt_scan()  # fork: codex-output-cap, attempt-usage
+        attempt = self._fork_attempt_scan()  # fork: codex-output-cap; fork: attempt-usage
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         pending: list[str] = []
         seen_chars = 0
         async for chunk in response.content.iter_any():
             text = decoder.decode(chunk)
             seen_chars += len(text)
-            attempt.feed(text, seen_chars)  # fork: codex-output-cap, attempt-usage
+            attempt.feed(text, seen_chars)  # fork: codex-output-cap; fork: attempt-usage
             if seen_chars > _MAX_SSE_BODY_CHARS:
                 raise CodexRunawayStreamError(
                     f"Codex response exceeded {_MAX_SSE_BODY_CHARS} characters without completing; "

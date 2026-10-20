@@ -259,8 +259,8 @@ def test_llm_trace_keeps_the_attempt_usage_hooks():
 def test_codex_keeps_the_attempt_meter_hooks():
     # One scan per attempt serves the meter and the output cap (FORK-CODEX-OUTPUT-CAP.md, C3/C4).
     body = inspect.getsource(CodexLLM._iter_sse_lines)
-    assert "attempt = self._fork_attempt_scan()  # fork: codex-output-cap, attempt-usage" in body
+    assert "attempt = self._fork_attempt_scan()  # fork: codex-output-cap; fork: attempt-usage" in body
     assert (
-        "            attempt.feed(text, seen_chars)  # fork: codex-output-cap, attempt-usage\n"
+        "            attempt.feed(text, seen_chars)  # fork: codex-output-cap; fork: attempt-usage\n"
         "            if seen_chars > _MAX_SSE_BODY_CHARS:"
     ) in body

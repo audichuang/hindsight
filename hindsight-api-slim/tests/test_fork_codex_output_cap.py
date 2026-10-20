@@ -259,12 +259,12 @@ def test_codex_keeps_the_output_cap_hooks():
     init = inspect.getsource(CodexLLM.__init__)
     assert "self._fork_attempt_scan = attempt_scan_factory()  # fork: codex-output-cap" in init
     body = inspect.getsource(CodexLLM._iter_sse_lines)
-    assert "attempt = self._fork_attempt_scan()  # fork: codex-output-cap, attempt-usage" in body
+    assert "attempt = self._fork_attempt_scan()  # fork: codex-output-cap; fork: attempt-usage" in body
     # Right after the character count, before the character ceiling (the meter must count the chunk
     # that trips either guard) and before any line of the chunk is handed to the parser.
     assert (
         "            seen_chars += len(text)\n"
-        "            attempt.feed(text, seen_chars)  # fork: codex-output-cap, attempt-usage\n"
+        "            attempt.feed(text, seen_chars)  # fork: codex-output-cap; fork: attempt-usage\n"
         "            if seen_chars > _MAX_SSE_BODY_CHARS:"
     ) in body
     assert body.index("attempt.feed(text, seen_chars)") < body.index("if not _LINE_BREAK_RE.search(text):")

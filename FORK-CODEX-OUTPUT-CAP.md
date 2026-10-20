@@ -69,7 +69,7 @@ Each line is marked `# fork: codex-output-cap`.
 |---|---|---|
 | C1 | `hindsight-api-slim/hindsight_api/config.py` | `ENV_CODEX_MAX_OUTPUT_DELTAS` and the accessor `codex_output_cap_env()` at the end of the file, after the cost-accounting accessor |
 | C2 | `hindsight-api-slim/hindsight_api/engine/providers/codex_llm.py`, `CodexLLM.__init__` | a local import of `attempt_scan_factory` and `self._fork_attempt_scan = attempt_scan_factory()` (validates the setting) right after `self._request_timeout = self.timeout or _DEFAULT_CODEX_TIMEOUT` |
-| C3 | same file, `_iter_sse_lines` | `attempt = self._fork_attempt_scan()` before the decoder, marked `# fork: codex-output-cap, attempt-usage` (it is also attempt-usage A6) |
+| C3 | same file, `_iter_sse_lines` | `attempt = self._fork_attempt_scan()` before the decoder, marked `# fork: codex-output-cap; fork: attempt-usage` (it is also attempt-usage A6) |
 | C4 | same file, `_iter_sse_lines` | `attempt.feed(text, seen_chars)` right after `seen_chars += len(text)`, before the `_MAX_SSE_BODY_CHARS` check, marked as C3 |
 | C5 | same file, module level | `_MAX_SSE_BODY_CHARS = 8 * 1024 * 1024` with the marker on the same line (upstream: `4 * 1024 * 1024`); upstream's comment above it is unchanged. See "Related fix" |
 
