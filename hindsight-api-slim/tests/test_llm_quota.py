@@ -848,3 +848,48 @@ async def test_fetch_all_with_no_lanes_returns_empty_providers():
 def test_response_models_reject_bad_status_values():
     with pytest.raises(ValidationError):
         llm_quota.ProviderQuota.model_validate({"provider": "x", "lanes": [], "status": "great"})
+
+
+async def test_trickling_provider_is_cut_off_by_the_total_deadline():
+    """A provider that never finishes (each read inside the per-phase timeout) must not stall /quota."""
+
+    async def never_finishes(url, headers):
+        await asyncio.sleep(3600)
+
+    service = LLMQuotaService(
+        _memory(_llm_config=_claude_member()),
+        _settings(CLAUDE_TOKEN),
+        http_get=never_finishes,
+        cache=QuotaCache(FakeClock(), fetch_timeout_seconds=0.05),
+    )
+    first, second = await asyncio.wait_for(
+        asyncio.gather(service.fetch_all("bank-1"), service.fetch_all("bank-1")), timeout=2
+    )
+    assert (_only(first).status, _only(first).reason) == ("error", "timeout")
+    # The second page load waited on the same key's lock and got the backed-off reading, not a second hang.
+    assert _only(second).reason == "timeout"
+
+
+async def test_codex_token_refresh_outlives_the_deadline():
+    """The deadline must not cancel a Codex refresh mid-rotation: the rotated refresh token would be lost."""
+    member, impl = _codex_member()
+    refreshed = asyncio.Event()
+
+    async def slow_refresh():
+        await asyncio.sleep(0.2)
+        refreshed.set()
+
+    impl._ensure_fresh_token = slow_refresh
+    impl._build_request_headers = MagicMock(return_value={"Authorization": "Bearer x"})
+    http = FakeHttp(lambda url: _ok(_codex_payload()))
+    service = LLMQuotaService(
+        _memory(_llm_config=member),
+        _settings(),
+        http_get=http,
+        cache=QuotaCache(FakeClock(), fetch_timeout_seconds=0.05),
+    )
+    provider = _only(await service.fetch_all("bank-1"))
+    assert (provider.status, provider.reason) == ("error", "timeout")
+    assert not refreshed.is_set()
+    await asyncio.wait_for(refreshed.wait(), timeout=2)
+    assert http.calls == []  # the probe itself was abandoned; only the refresh finished

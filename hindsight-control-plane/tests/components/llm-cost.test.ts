@@ -108,6 +108,22 @@ describe("fetchLLMCostSummary", () => {
     );
   });
 
+  it("keeps the proxy's error text so the panel can say why", async () => {
+    stubFetch(400, { error: "Unknown time zone: Mars/Base" });
+    await expect(fetchLLMCostSummary("bank", { period: "7d", tz: "UTC" })).rejects.toMatchObject({
+      status: 400,
+      detail: "Unknown time zone: Mars/Base",
+    });
+  });
+
+  it("has no detail when the failure body is not the proxy's shape", async () => {
+    stubFetch(502, "upstream down");
+    await expect(fetchLLMCostSummary("bank", { period: "7d", tz: "UTC" })).rejects.toMatchObject({
+      status: 502,
+      detail: null,
+    });
+  });
+
   it("resolves to the parsed body on 200", async () => {
     const body = { bank_id: "bank", models: [], cost_usd: 0 };
     stubFetch(200, body);

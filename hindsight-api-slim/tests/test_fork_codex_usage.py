@@ -230,6 +230,3 @@ async def test_failed_retry_keeps_the_previous_attempt_usage():
     assert usage.input_tokens == EXPECTED_INPUT
     assert usage.output_tokens == EXPECTED_OUTPUT
     assert usage.cached_tokens == EXPECTED_CACHED
-
-
-# --- usage parsing at the event boundary ----------------------------------------------------------

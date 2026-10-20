@@ -2,15 +2,24 @@
 // Subscription quota card for the LLM requests view. Shows each plan-backed provider's usage
 // windows, credits and extra-usage budget. It renders nothing when the feature is off (the
 // endpoint answers 404), when no provider reports anything, or when the control plane has the
-// cost feature disabled. Exported but not mounted yet; LLMCostPanel mounts it in a later step.
+// cost feature disabled. Mounted by LLMCostPanel, above the cost card.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocale } from "next-intl";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useFeatures } from "@/lib/features-context";
-import { clampPercent, fetchLLMQuota, formatResetIn } from "@/lib/fork/llm-quota";
+import {
+  clampPercent,
+  fetchLLMQuota,
+  formatBalance,
+  formatResetIn,
+  newestFetchedAt,
+  refreshHitServerCache,
+} from "@/lib/fork/llm-quota";
+import { ForkRequestError } from "@/lib/fork/fork-request";
 import type {
+  ResetInLabels,
   LLMQuotaResponse,
   ProviderQuota,
   QuotaReason,
@@ -21,6 +30,8 @@ import type {
 interface QuotaStrings {
   title: string;
   refresh: string;
+  refreshing: string;
+  unchanged: string;
   loading: string;
   loadError: string;
   plan: string;
@@ -38,6 +49,7 @@ interface QuotaStrings {
   modelScope: string;
   accountScope: string;
   detail: string;
+  resetIn: ResetInLabels;
   statuses: Record<QuotaStatus, string>;
   reasons: Record<QuotaReason, string>;
 }
@@ -45,6 +57,8 @@ interface QuotaStrings {
 const EN: QuotaStrings = {
   title: "Subscription quota",
   refresh: "Refresh",
+  refreshing: "Refreshing…",
+  unchanged: "No newer reading yet: the server re-reads each provider at most once a minute.",
   loading: "Loading quota…",
   loadError: "Could not load quota data.",
   plan: "Plan",
@@ -62,6 +76,12 @@ const EN: QuotaStrings = {
   modelScope: "model",
   accountScope: "account",
   detail: "Detail",
+  resetIn: {
+    daysHours: "in {d}d {h}h",
+    hoursMinutes: "in {h}h {m}m",
+    minutes: "in {m}m",
+    underMinute: "in <1m",
+  },
   statuses: { ok: "OK", unsupported: "Not supported", unavailable: "Unavailable", error: "Error" },
   reasons: {
     no_credentials: "No credentials configured for this provider",
@@ -80,6 +100,8 @@ const EN: QuotaStrings = {
 const ZH_TW: QuotaStrings = {
   title: "訂閱額度",
   refresh: "重新整理",
+  refreshing: "更新中…",
+  unchanged: "尚無較新的數值：伺服器每分鐘最多向供應商讀取一次。",
   loading: "載入額度中…",
   loadError: "無法載入額度資料。",
   plan: "方案",
@@ -97,6 +119,12 @@ const ZH_TW: QuotaStrings = {
   modelScope: "模型",
   accountScope: "帳號",
   detail: "詳細資訊",
+  resetIn: {
+    daysHours: "{d} 天 {h} 小時後",
+    hoursMinutes: "{h} 小時 {m} 分後",
+    minutes: "{m} 分鐘後",
+    underMinute: "不到 1 分鐘",
+  },
   statuses: { ok: "正常", unsupported: "不支援", unavailable: "無法取得", error: "錯誤" },
   reasons: {
     no_credentials: "此供應商未設定憑證",
@@ -119,9 +147,11 @@ function stringsFor(locale: string): QuotaStrings {
   return STRINGS[locale] ?? STRINGS.en;
 }
 
+// `nonce` is the refresh count the load answers; a newer nonce on the card means a refresh is in flight.
 type QuotaLoad =
-  | { bankId: string; status: "ready"; data: LLMQuotaResponse }
-  | { bankId: string; status: "off" | "error" };
+  | { bankId: string; nonce: number; status: "ready"; data: LLMQuotaResponse; unchanged: boolean }
+  | { bankId: string; nonce: number; status: "off" }
+  | { bankId: string; nonce: number; status: "error"; detail: string | null };
 
 /** Local date and time for an ISO timestamp, or an empty string when it does not parse. */
 function formatLocalTime(iso: string | null, locale: string): string {
@@ -143,6 +173,9 @@ export function LLMQuotaCard({ bankId }: { bankId: string }) {
   const enabled = useFeatures().features?.llm_cost === true;
   const [load, setLoad] = useState<QuotaLoad | null>(null);
   const [nonce, setNonce] = useState(0);
+  // The API caches each provider for 60 s, so a refresh inside that window returns the same reading;
+  // say so instead of leaving the click without visible effect.
+  const lastReading = useRef({ bankId: "", newest: "" });
 
   useEffect(() => {
     if (!enabled) return;
@@ -150,10 +183,20 @@ export function LLMQuotaCard({ bankId }: { bankId: string }) {
     fetchLLMQuota(bankId)
       .then((data) => {
         if (cancelled) return;
-        setLoad(data ? { bankId, status: "ready", data } : { bankId, status: "off" });
+        if (!data) {
+          setLoad({ bankId, nonce, status: "off" });
+          return;
+        }
+        const last = lastReading.current;
+        const previous = nonce > 0 && last.bankId === bankId ? last.newest : null;
+        lastReading.current = { bankId, newest: newestFetchedAt(data) };
+        const unchanged = refreshHitServerCache(previous, data);
+        setLoad({ bankId, nonce, status: "ready", data, unchanged });
       })
-      .catch(() => {
-        if (!cancelled) setLoad({ bankId, status: "error" });
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        const detail = error instanceof ForkRequestError ? error.detail : null;
+        setLoad({ bankId, nonce, status: "error", detail });
       });
     return () => {
       cancelled = true;
@@ -161,6 +204,8 @@ export function LLMQuotaCard({ bankId }: { bankId: string }) {
   }, [bankId, enabled, nonce]);
 
   const current = load?.bankId === bankId ? load : null;
+  // Derived, not stored: a bank switch or an unmounted fetch can never leave the button stuck.
+  const refreshing = current !== null && current.nonce !== nonce;
   if (!enabled || current?.status === "off") return null;
   if (current?.status === "ready" && current.data.providers.length === 0) return null;
 
@@ -172,14 +217,22 @@ export function LLMQuotaCard({ bankId }: { bankId: string }) {
           variant="outline"
           size="sm"
           onClick={() => setNonce((n) => n + 1)}
-          disabled={current === null}
+          disabled={current === null || refreshing}
         >
-          {s.refresh}
+          {refreshing ? s.refreshing : s.refresh}
         </Button>
       </CardHeader>
       <CardContent className="space-y-4">
         {current === null && <p className="text-sm text-muted-foreground">{s.loading}</p>}
-        {current?.status === "error" && <p className="text-sm text-destructive">{s.loadError}</p>}
+        {current?.status === "error" && (
+          <p className="text-sm text-destructive">
+            {s.loadError}
+            {current.detail && <span className="font-mono"> ({current.detail})</span>}
+          </p>
+        )}
+        {current?.status === "ready" && current.unchanged && !refreshing && (
+          <p className="text-xs text-muted-foreground">{s.unchanged}</p>
+        )}
         {current?.status === "ready" &&
           current.data.providers.map((provider) => (
             <ProviderBlock
@@ -249,7 +302,9 @@ function ProviderBlock({
             {s.balance}:{" "}
             {provider.credits.unlimited
               ? s.unlimited
-              : (provider.credits.balance?.toString() ?? "—")}
+              : provider.credits.balance === null
+                ? "—"
+                : formatBalance(provider.credits.balance, locale)}
           </span>
           {provider.credits.banked_resets > 0 && (
             <span className="font-mono">
@@ -288,7 +343,7 @@ function WindowRow({
 }) {
   const percent = clampPercent(quotaWindow.used_percent);
   const resetLocal = formatLocalTime(quotaWindow.resets_at, locale);
-  const resetIn = formatResetIn(quotaWindow.resets_at, new Date());
+  const resetIn = formatResetIn(quotaWindow.resets_at, new Date(), s.resetIn);
   const resetText = [resetLocal && `${s.resets} ${resetLocal}`, resetIn]
     .filter(Boolean)
     .join(" · ");

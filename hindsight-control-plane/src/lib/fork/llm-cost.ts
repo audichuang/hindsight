@@ -4,6 +4,7 @@
 // types are maintained by hand.
 
 import { withBasePath } from "@/lib/base-path";
+import { errorDetail, ForkRequestError } from "@/lib/fork/fork-request";
 
 export type CostPeriod = "1d" | "7d" | "30d";
 export type BillingKind = "metered" | "plan" | "local";
@@ -96,7 +97,7 @@ async function fetchJsonOrNull<T>(path: string): Promise<T | null> {
     return null;
   }
   if (!response.ok) {
-    throw new Error(`cost request failed with status ${response.status}`);
+    throw new ForkRequestError(response.status, await errorDetail(response), "cost");
   }
   return (await response.json()) as T;
 }

@@ -1,6 +1,27 @@
 // fork: cost-accounting
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { clampPercent, fetchLLMQuota, formatResetIn } from "@/lib/fork/llm-quota";
+import {
+  clampPercent,
+  fetchLLMQuota,
+  formatBalance,
+  formatResetIn,
+  refreshHitServerCache,
+  type LLMQuotaResponse,
+  type ProviderQuota,
+} from "@/lib/fork/llm-quota";
+
+const EN_RESET = {
+  daysHours: "in {d}d {h}h",
+  hoursMinutes: "in {h}h {m}m",
+  minutes: "in {m}m",
+  underMinute: "in <1m",
+};
+const ZH_RESET = {
+  daysHours: "{d} 天 {h} 小時後",
+  hoursMinutes: "{h} 小時 {m} 分後",
+  minutes: "{m} 分鐘後",
+  underMinute: "不到 1 分鐘",
+};
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -29,26 +50,41 @@ describe("formatResetIn", () => {
   const now = new Date("2026-10-15T10:00:00Z");
 
   it("formats hours and minutes", () => {
-    expect(formatResetIn("2026-10-15T13:20:00Z", now)).toBe("in 3h 20m");
+    expect(formatResetIn("2026-10-15T13:20:00Z", now, EN_RESET)).toBe("in 3h 20m");
   });
 
   it("formats minutes only under an hour", () => {
-    expect(formatResetIn("2026-10-15T10:45:00Z", now)).toBe("in 45m");
+    expect(formatResetIn("2026-10-15T10:45:00Z", now, EN_RESET)).toBe("in 45m");
   });
 
   it("formats days and hours", () => {
-    expect(formatResetIn("2026-10-17T14:00:00Z", now)).toBe("in 2d 4h");
+    expect(formatResetIn("2026-10-17T14:00:00Z", now, EN_RESET)).toBe("in 2d 4h");
   });
 
   it("shows under a minute when less than a minute is left", () => {
-    expect(formatResetIn("2026-10-15T10:00:30Z", now)).toBe("in <1m");
+    expect(formatResetIn("2026-10-15T10:00:30Z", now, EN_RESET)).toBe("in <1m");
   });
 
   it("returns an empty string for null, past, or unparseable times", () => {
-    expect(formatResetIn(null, now)).toBe("");
-    expect(formatResetIn("2026-10-15T09:00:00Z", now)).toBe("");
-    expect(formatResetIn("2026-10-15T10:00:00Z", now)).toBe("");
-    expect(formatResetIn("not-a-date", now)).toBe("");
+    expect(formatResetIn(null, now, EN_RESET)).toBe("");
+    expect(formatResetIn("2026-10-15T09:00:00Z", now, EN_RESET)).toBe("");
+    expect(formatResetIn("2026-10-15T10:00:00Z", now, EN_RESET)).toBe("");
+    expect(formatResetIn("not-a-date", now, EN_RESET)).toBe("");
+  });
+});
+
+describe("formatResetIn in another language", () => {
+  it("uses the caller's templates", () => {
+    const now = new Date("2026-10-15T10:00:00Z");
+    expect(formatResetIn("2026-10-20T09:00:00Z", now, ZH_RESET)).toBe("4 天 23 小時後");
+    expect(formatResetIn("2026-10-15T13:20:00Z", now, ZH_RESET)).toBe("3 小時 20 分後");
+  });
+});
+
+describe("formatBalance", () => {
+  it("rounds to two decimals and groups digits", () => {
+    expect(formatBalance(62199.48052275, "en")).toBe("62,199.48");
+    expect(formatBalance(5, "en")).toBe("5");
   });
 });
 
@@ -81,5 +117,68 @@ describe("fetchLLMQuota", () => {
       vi.fn(async () => new Response("{}", { status: 500 }))
     );
     await expect(fetchLLMQuota("bank-a")).rejects.toThrow("status 500");
+  });
+});
+
+describe("fetchLLMQuota errors", () => {
+  it("keeps the proxy's error text", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () => new Response(JSON.stringify({ error: "bank not readable" }), { status: 403 })
+      )
+    );
+    await expect(fetchLLMQuota("bank")).rejects.toMatchObject({
+      status: 403,
+      detail: "bank not readable",
+    });
+  });
+});
+
+function quota(...providers: Partial<ProviderQuota>[]): LLMQuotaResponse {
+  return {
+    bank_id: "bank",
+    scope: "server",
+    providers: providers.map((p) => ({
+      provider: "openai-codex",
+      lanes: ["default"],
+      status: "ok",
+      reason: null,
+      detail: null,
+      plan: null,
+      windows: [],
+      credits: null,
+      budget: null,
+      fetched_at: null,
+      stale: false,
+      ...p,
+    })),
+  };
+}
+
+describe("refreshHitServerCache", () => {
+  const t1 = "2026-10-20T01:00:00Z";
+  const t2 = "2026-10-20T01:01:30Z";
+
+  it("is true when a refresh returns the reading already shown", () => {
+    expect(refreshHitServerCache(t1, quota({ fetched_at: t1 }))).toBe(true);
+  });
+
+  it("is false when the reading is newer", () => {
+    expect(refreshHitServerCache(t1, quota({ fetched_at: t2 }))).toBe(false);
+  });
+
+  it("is false with nothing to compare (first load or another bank)", () => {
+    expect(refreshHitServerCache(null, quota({ fetched_at: t1 }))).toBe(false);
+  });
+
+  it("is false while a provider is stale: backoff can repeat the reading for 900 s", () => {
+    expect(
+      refreshHitServerCache(t1, quota({ fetched_at: t1, stale: true }, { fetched_at: t1 }))
+    ).toBe(false);
+  });
+
+  it("is false when no provider has a reading", () => {
+    expect(refreshHitServerCache("", quota({ fetched_at: null }))).toBe(false);
   });
 });

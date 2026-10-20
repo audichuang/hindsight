@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/table";
 import type { LLMRequestEntry } from "@/lib/api";
 import { LLMQuotaCard } from "@/components/fork/llm-quota-card";
+import { ForkRequestError } from "@/lib/fork/fork-request";
 import { useFeatures } from "@/lib/features-context";
 import {
   browserTimeZone,
@@ -106,7 +107,7 @@ const EN: CostStrings = {
   planValue: "≈ API list price, not billed",
   planNote: "API list price, not billed",
   lowerBound:
-    "Some calls were recorded before cache-write tracking, so their cost is a lower bound.",
+    "Some calls have no cache-write count (recorded before cost tracking, or not reported by the provider), so their cost is a lower bound.",
   pricingSource: "Pricing source",
   planPrefix: "≈ ",
   unpricedSuffix: "unpriced",
@@ -178,7 +179,7 @@ const ZH_TW: CostStrings = {
   meteredTotal: "按量計費成本",
   planValue: "≈ API 標價，不計費",
   planNote: "API 標價，不計費",
-  lowerBound: "部分呼叫記錄於快取寫入追蹤之前，因此費用為下限。",
+  lowerBound: "部分呼叫沒有快取寫入數（記錄於費用追蹤啟用前，或供應商未回報），因此費用為下限。",
   pricingSource: "價格來源",
   planPrefix: "≈ ",
   unpricedSuffix: "未計價",
@@ -245,7 +246,8 @@ function stringsFor(locale: string): CostStrings {
 
 type CostLoad =
   | { key: string; status: "ready"; data: LLMCostSummaryResponse }
-  | { key: string; status: "off" | "error" };
+  | { key: string; status: "off" }
+  | { key: string; status: "error"; detail: string | null };
 
 export function LLMCostPanel({ bankId }: { bankId: string }) {
   const s = stringsFor(useLocale());
@@ -264,8 +266,14 @@ export function LLMCostPanel({ bankId }: { bankId: string }) {
         if (cancelled) return;
         setLoad(data ? { key, status: "ready", data } : { key, status: "off" });
       })
-      .catch(() => {
-        if (!cancelled) setLoad({ key, status: "error" });
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        // The proxy's error text (e.g. an unknown time zone, a tag-scoped key) says why; keep it.
+        setLoad({
+          key,
+          status: "error",
+          detail: error instanceof ForkRequestError ? error.detail : null,
+        });
       });
     return () => {
       cancelled = true;
@@ -297,7 +305,12 @@ export function LLMCostPanel({ bankId }: { bankId: string }) {
         </CardHeader>
         <CardContent className="space-y-4">
           {current === null && <p className="text-sm text-muted-foreground">{s.loading}</p>}
-          {current?.status === "error" && <p className="text-sm text-destructive">{s.loadError}</p>}
+          {current?.status === "error" && (
+            <p className="text-sm text-destructive">
+              {s.loadError}
+              {current.detail && <span className="font-mono"> ({current.detail})</span>}
+            </p>
+          )}
           {current?.status === "ready" && <CostSummaryBody data={current.data} s={s} />}
         </CardContent>
       </Card>
