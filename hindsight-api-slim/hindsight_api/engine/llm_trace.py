@@ -47,6 +47,12 @@ from pydantic import BaseModel
 from ..tracing import get_span_recorder
 from .background_writes import PendingWrites
 from .db_utils import acquire_with_retry
+from .llm_attempt_usage import (  # fork: attempt-usage
+    close_call_ledger,
+    fold_attempt_usage,
+    note_stashed_usage,
+    open_call_ledger,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +135,7 @@ _response_usage_ctx: ContextVar[LLMResponseUsage | None] = ContextVar("hindsight
 
 def set_response_usage(usage: LLMResponseUsage | None) -> Token:
     """Bind provider-reported usage for the current call. Returns a reset token."""
+    open_call_ledger()  # fork: attempt-usage
     return _response_usage_ctx.set(usage)
 
 
@@ -139,11 +146,13 @@ def stash_response_usage(usage: LLMResponseUsage | None) -> None:
     before parsing/validation that may raise. Overwrites any prior value from an
     earlier retry attempt so the last attempt's usage wins.
     """
+    note_stashed_usage(usage)  # fork: attempt-usage
     _response_usage_ctx.set(usage)
 
 
 def reset_response_usage(token: Token) -> None:
     """Unwind a binding made by :func:`set_response_usage`."""
+    close_call_ledger()  # fork: attempt-usage
     _response_usage_ctx.reset(token)
 
 
@@ -715,6 +724,7 @@ class LLMTraceRecorder:
 
     # ── GenAI recorder interface ──────────────────────────────────────────────
 
+    @fold_attempt_usage  # fork: attempt-usage
     def record_llm_call(
         self,
         provider: str,
