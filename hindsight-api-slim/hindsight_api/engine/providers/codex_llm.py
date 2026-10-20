@@ -409,6 +409,9 @@ class CodexLLM(LLMInterface):
         # ``llm_timeout`` / the per-operation override; the literal below is only
         # the unconfigured fallback.
         self._request_timeout = self.timeout or _DEFAULT_CODEX_TIMEOUT
+        from hindsight_api.engine.providers.codex_output_cap import CodexOutputCap  # fork: codex-output-cap
+
+        self._fork_output_cap = CodexOutputCap.from_env()  # fork: codex-output-cap (a bad value fails here)
 
         # HTTP session for SSE streaming, one per event loop. Its timeouts are
         # per-phase (per socket read), so they bound a *silent* backend only — a
@@ -988,6 +991,7 @@ class CodexLLM(LLMInterface):
         from hindsight_api.engine.llm_attempt_usage import begin_codex_attempt  # fork: attempt-usage
 
         attempt = begin_codex_attempt()  # fork: attempt-usage
+        deltas = self._fork_output_cap.begin_attempt()  # fork: codex-output-cap
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         pending: list[str] = []
         seen_chars = 0
@@ -1000,6 +1004,7 @@ class CodexLLM(LLMInterface):
                     f"Codex response exceeded {_MAX_SSE_BODY_CHARS} characters without completing; "
                     "abandoning the stream"
                 )
+            deltas.feed(text)  # fork: codex-output-cap
             if not _LINE_BREAK_RE.search(text):
                 # Still inside one line: defer the join so a long line costs linear time.
                 pending.append(text)
