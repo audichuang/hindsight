@@ -3,8 +3,7 @@
 // hindsight_api/engine/llm_quota.py. The endpoint is hidden from OpenAPI, so these types are
 // maintained by hand.
 
-import { withBasePath } from "@/lib/base-path";
-import { errorDetail, ForkRequestError } from "@/lib/fork/fork-request";
+import { fetchJsonOrNull } from "@/lib/fork/fork-request";
 
 export type QuotaStatus = "ok" | "unsupported" | "unavailable" | "error";
 export type QuotaReason =
@@ -59,21 +58,10 @@ export interface LLMQuotaResponse {
   providers: ProviderQuota[];
 }
 
-/** Returns null when the endpoint is absent (404), which means the quota feature is off. */
-async function fetchJsonOrNull<T>(path: string): Promise<T | null> {
-  const response = await fetch(withBasePath(path), { method: "GET" });
-  if (response.status === 404) {
-    return null;
-  }
-  if (!response.ok) {
-    throw new ForkRequestError(response.status, await errorDetail(response));
-  }
-  return (await response.json()) as T;
-}
-
 export function fetchLLMQuota(bankId: string): Promise<LLMQuotaResponse | null> {
   return fetchJsonOrNull<LLMQuotaResponse>(
-    `/api/banks/${encodeURIComponent(bankId)}/llm-requests/quota`
+    `/api/banks/${encodeURIComponent(bankId)}/llm-requests/quota`,
+    "quota"
   );
 }
 

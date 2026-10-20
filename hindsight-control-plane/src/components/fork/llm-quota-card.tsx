@@ -17,7 +17,8 @@ import {
   newestFetchedAt,
   refreshHitServerCache,
 } from "@/lib/fork/llm-quota";
-import { ForkRequestError } from "@/lib/fork/fork-request";
+import { ForkLoadError } from "@/components/fork/fork-load-error";
+import { errorDetailOf } from "@/lib/fork/fork-request";
 import type {
   ResetInLabels,
   LLMQuotaResponse,
@@ -195,8 +196,7 @@ export function LLMQuotaCard({ bankId }: { bankId: string }) {
       })
       .catch((error: unknown) => {
         if (cancelled) return;
-        const detail = error instanceof ForkRequestError ? error.detail : null;
-        setLoad({ bankId, nonce, status: "error", detail });
+        setLoad({ bankId, nonce, status: "error", detail: errorDetailOf(error) });
       });
     return () => {
       cancelled = true;
@@ -225,10 +225,7 @@ export function LLMQuotaCard({ bankId }: { bankId: string }) {
       <CardContent className="space-y-4">
         {current === null && <p className="text-sm text-muted-foreground">{s.loading}</p>}
         {current?.status === "error" && (
-          <p className="text-sm text-destructive">
-            {s.loadError}
-            {current.detail && <span className="font-mono"> ({current.detail})</span>}
-          </p>
+          <ForkLoadError message={s.loadError} detail={current.detail} />
         )}
         {current?.status === "ready" && current.unchanged && !refreshing && (
           <p className="text-xs text-muted-foreground">{s.unchanged}</p>
