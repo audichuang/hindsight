@@ -1007,12 +1007,16 @@ class CodexLLM(LLMInterface):
         did), including a ``\\r\\n`` that straddles two chunks. aiohttp's own line
         reader is not used: it raises on a line longer than its buffer limit.
         """
+        from hindsight_api.engine.llm_attempt_usage import begin_codex_attempt  # fork: attempt-usage
+
+        attempt = begin_codex_attempt()  # fork: attempt-usage
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         pending: list[str] = []
         seen_chars = 0
         async for chunk in response.content.iter_any():
             text = decoder.decode(chunk)
             seen_chars += len(text)
+            attempt.feed(text)  # fork: attempt-usage
             if seen_chars > _MAX_SSE_BODY_CHARS:
                 raise CodexRunawayStreamError(
                     f"Codex response exceeded {_MAX_SSE_BODY_CHARS} characters without completing; "
