@@ -378,6 +378,38 @@ def test_codex_note_is_tied_to_the_stashed_object(monkeypatch):
     assert other.usage_source == "estimate"
 
 
+@pytest.mark.parametrize(
+    "details, expected",
+    [
+        ({"cached_tokens": 10, "cache_write_tokens": 0}, 0),
+        ({"cached_tokens": 10, "cache_write_tokens": 7}, 7),
+        ({"cached_tokens": 10}, None),
+        ({"cached_tokens": 10, "cache_write_tokens": "7"}, None),
+    ],
+)
+def test_codex_cache_writes_tells_a_reported_zero_from_none_reported(details, expected):
+    event = {"type": "response.completed", "response": {"usage": {"input_tokens": 50, "input_tokens_details": details}}}
+    assert llm_cost._codex_cache_writes(event) == expected
+    assert llm_cost._codex_cache_writes({"response": "not-a-dict"}) is None
+
+
+def test_codex_cache_writes_reads_the_explicit_zero_the_chatgpt_backend_sends():
+    """Shape of a real ``response.completed`` usage block from the ChatGPT backend (gpt-6.1-sol, 2026-10-20).
+
+    The backend sends ``cache_write_tokens: 0`` explicitly, also on the call that created the cache, so the
+    row records a reported zero (a breakdown), not a missing one.
+    """
+    usage = {
+        "input_tokens": 6841,
+        "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+        "output_tokens": 5,
+        "output_tokens_details": {"reasoning_tokens": 0},
+        "total_tokens": 6846,
+        "attribution": {"request_fields": {"instructions": {"input_tokens": 6826, "cache_write_tokens": 0}}},
+    }
+    assert llm_cost._codex_cache_writes({"type": "response.completed", "response": {"usage": usage}}) == 0
+
+
 def test_codex_note_is_a_no_op_with_the_feature_off():
     stash = SimpleNamespace(input_tokens=1, cached_tokens=0)
     note_codex_usage(stash, _codex_event(99))

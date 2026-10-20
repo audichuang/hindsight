@@ -8,6 +8,7 @@ import {
   isPartlyProviderReported,
   llmCostPanelEnabled,
 } from "@/lib/fork/llm-cost";
+import { COST_LOAD_ERROR } from "@/lib/fork/fork-request";
 
 /** Stubs the global fetch with one fixed status and JSON body, and returns the spy. */
 function stubFetch(status: number, body: unknown = {}) {
@@ -113,6 +114,14 @@ describe("fetchLLMCostSummary", () => {
     await expect(fetchLLMCostSummary("bank", { period: "7d", tz: "UTC" })).rejects.toMatchObject({
       status: 400,
       detail: "Unknown time zone: Mars/Base",
+    });
+  });
+
+  it("drops the proxy's generic load-error text, which repeats the panel's own message", async () => {
+    stubFetch(500, { error: COST_LOAD_ERROR });
+    await expect(fetchLLMCostSummary("bank", { period: "7d", tz: "UTC" })).rejects.toMatchObject({
+      status: 500,
+      detail: null,
     });
   });
 

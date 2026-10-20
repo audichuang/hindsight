@@ -1,13 +1,14 @@
 // fork: cost-accounting
 // Server side of the fork cost and quota proxies. Forwards one GET to a dataplane endpoint and maps
-// failures to endpoint-specific messages. The messages are English only: the cost and quota panels
-// show their own localized copy, so no i18n catalog key is needed (see src/components/fork/).
+// failures to endpoint-specific messages. A dataplane `detail` string is passed through; otherwise the
+// message is an English generic one, which the clients drop (`errorDetail` in fork-request.ts) since
+// the cost and quota panels already show their own localized load-error copy.
 
 import { NextResponse } from "next/server";
+import { COST_LOAD_ERROR, QUOTA_LOAD_ERROR } from "@/lib/fork/fork-request";
 import { dataplaneBankUrl, getDataplaneHeaders } from "@/lib/hindsight-client";
 
-export const COST_LOAD_ERROR = "Failed to get LLM cost data";
-export const QUOTA_LOAD_ERROR = "Failed to get LLM quota data";
+export { COST_LOAD_ERROR, QUOTA_LOAD_ERROR };
 
 export type LLMForkEndpoint =
   | "/llm-requests/cost"

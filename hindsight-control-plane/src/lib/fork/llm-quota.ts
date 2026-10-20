@@ -142,17 +142,26 @@ export function newestFetchedAt(data: LLMQuotaResponse): string {
 }
 
 /**
+ * True when the server is backing off this provider after a failed read (60 s, doubling up to
+ * 900 s): it returns the last good reading marked stale, or, with none, the failed reading itself,
+ * which is not `ok` and carries the `fetched_at` of the failure. A provider the server never reads
+ * (unsupported, no credentials) has no `fetched_at` and is not backing off.
+ */
+function isBackingOff(p: ProviderQuota): boolean {
+  return p.stale || (p.status !== "ok" && p.fetched_at !== null);
+}
+
+/**
  * True when a manual refresh brought back the reading already on screen because the server's
  * 60 s cache answered it. `previousNewest` is null when there is nothing to compare (the first
- * load, or another bank). False while any provider is stale: during backoff the server returns
- * the same last good reading for up to 900 s, so "once a minute" would be wrong, and the stale
- * badge already explains it.
+ * load, or another bank). False while any provider is backing off (see `isBackingOff`): the
+ * server then returns the same reading for up to 900 s, so "once a minute" would be wrong.
  */
 export function refreshHitServerCache(
   previousNewest: string | null,
   data: LLMQuotaResponse
 ): boolean {
-  if (previousNewest === null || data.providers.some((p) => p.stale)) {
+  if (previousNewest === null || data.providers.some(isBackingOff)) {
     return false;
   }
   const newest = newestFetchedAt(data);

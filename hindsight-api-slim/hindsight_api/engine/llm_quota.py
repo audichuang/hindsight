@@ -523,8 +523,9 @@ async def _run_fetch(
         return _failed("internal_error", fetched_at)
 
 
-# Refresh tasks that may outlive a cancelled quota fetch; held here so they are not garbage-collected mid-run.
-# Process-global and reachable from any loop's thread, so add/discard go through a threading lock (never iterated).
+# Refresh tasks that may outlive a cancelled quota fetch; held here so they are not garbage-collected mid-run,
+# and so engine shutdown can wait for them (drain_detached_refreshes). Process-global and reachable from any
+# loop's thread, so every access goes through a threading lock.
 _DETACHED_REFRESHES: set[asyncio.Task[None]] = set()
 _DETACHED_REFRESHES_LOCK = threading.Lock()
 
@@ -549,6 +550,29 @@ async def _refresh_shielded(impl: "CodexLLM") -> None:
         _DETACHED_REFRESHES.add(task)
     task.add_done_callback(_settle_detached_refresh)
     await asyncio.shield(task)
+
+
+# Upper bound on how long engine shutdown waits for detached refreshes. A refresh is itself bounded by its
+# auth-store lock timeout and per-phase session timeout; this keeps shutdown inside a container stop grace.
+DETACHED_REFRESH_DRAIN_SECONDS = 15.0
+
+
+async def drain_detached_refreshes(timeout: float = DETACHED_REFRESH_DRAIN_SECONDS) -> None:
+    """Wait, up to ``timeout``, for this loop's refreshes the quota deadline left running in the background.
+
+    Called by ``MemoryEngine.close()`` before it closes the loop's HTTP sessions: closing the session under
+    a refresh whose token endpoint has already rotated the refresh token, but whose body is still arriving,
+    would lose the new tokens and leave ``auth.json`` with a refresh token that no longer works. Never raises.
+    """
+    loop = asyncio.get_running_loop()
+    with _DETACHED_REFRESHES_LOCK:
+        pending = [task for task in _DETACHED_REFRESHES if task.get_loop() is loop and not task.done()]
+    if not pending:
+        return
+    logger.info("Waiting for %d Codex token refresh(es) started by the quota probe", len(pending))
+    _done, still_running = await asyncio.wait(pending, timeout=timeout)
+    if still_running:
+        logger.warning("%d Codex token refresh(es) still running at shutdown", len(still_running))
 
 
 async def _fetch_codex(impl: object, http_get: HttpGet, fetched_at: datetime) -> QuotaReading:
