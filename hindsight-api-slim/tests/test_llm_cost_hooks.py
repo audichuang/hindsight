@@ -75,6 +75,10 @@ HOOK_LINES: dict[str, list[tuple[str, int]]] = {
         ("from hindsight_api.engine.llm_cost import openai_compatible_usage_kwargs  # fork: cost-accounting", 2),
         ("**openai_compatible_usage_kwargs(self.provider, self.base_url, response),  # fork: cost-accounting", 2),
     ],
+    "memory_engine.py": [
+        ("from .llm_quota import drain_detached_refreshes  # fork: cost-accounting", 1),
+        ("await drain_detached_refreshes()  # fork: cost-accounting", 1),
+    ],
     "providers/openai_responses_llm.py": [
         ("response: Any = None,  # fork: cost-accounting", 1),
         ("from hindsight_api.engine.llm_cost import openai_responses_usage_kwargs  # fork: cost-accounting", 1),
@@ -85,6 +89,7 @@ HOOK_LINES: dict[str, list[tuple[str, int]]] = {
 # Marker-line totals per file: the hook lines above, nothing else.
 MARKER_LINE_TOTALS = {
     "llm_trace.py": 2,
+    "memory_engine.py": 2,
     "providers/claude_code_llm.py": 4,
     "providers/codex_llm.py": 6,
     "providers/openai_compatible_llm.py": 4,
@@ -143,6 +148,16 @@ def test_fork_imports_are_local_not_module_level(relative):
     for line in _hook_source(relative).splitlines():
         if "llm_cost import" in line and MARKER in line:
             assert line.startswith(" "), line
+
+
+def test_engine_close_drains_quota_refreshes_before_closing_sessions():
+    # The drain must run before close_loop_sessions(), or a refresh mid-rotation loses its session.
+    source = _hook_source("memory_engine.py")
+    close = source.index("\n    async def close(self):")
+    next_method = source.index("\n    async def ", close + 1)
+    drain = source.index("await drain_detached_refreshes()  # fork: cost-accounting")
+    sessions = source.index("await close_loop_sessions()", close)
+    assert close < drain < sessions < next_method
 
 
 def test_anthropic_hooks_are_unchanged():

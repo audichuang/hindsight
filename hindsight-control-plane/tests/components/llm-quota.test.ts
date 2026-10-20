@@ -9,6 +9,7 @@ import {
   type LLMQuotaResponse,
   type ProviderQuota,
 } from "@/lib/fork/llm-quota";
+import { QUOTA_LOAD_ERROR } from "@/lib/fork/fork-request";
 
 const EN_RESET = {
   daysHours: "in {d}d {h}h",
@@ -135,6 +136,16 @@ describe("fetchLLMQuota errors", () => {
   });
 });
 
+describe("fetchLLMQuota generic proxy error", () => {
+  it("drops the proxy's generic load-error text, which repeats the card's own message", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: QUOTA_LOAD_ERROR }), { status: 500 }))
+    );
+    await expect(fetchLLMQuota("bank")).rejects.toMatchObject({ status: 500, detail: null });
+  });
+});
+
 function quota(...providers: Partial<ProviderQuota>[]): LLMQuotaResponse {
   return {
     bank_id: "bank",
@@ -170,6 +181,27 @@ describe("refreshHitServerCache", () => {
 
   it("is false with nothing to compare (first load or another bank)", () => {
     expect(refreshHitServerCache(null, quota({ fetched_at: t1 }))).toBe(false);
+  });
+
+  it("is false while a provider that never read ok repeats its error during backoff", () => {
+    expect(
+      refreshHitServerCache(t1, quota({ fetched_at: t1, status: "error", reason: "timeout" }))
+    ).toBe(false);
+    expect(
+      refreshHitServerCache(
+        t1,
+        quota({ fetched_at: t1, status: "unavailable", reason: "token_scope" })
+      )
+    ).toBe(false);
+  });
+
+  it("ignores a provider the server never reads, which has no fetched_at", () => {
+    expect(
+      refreshHitServerCache(
+        t1,
+        quota({ fetched_at: t1 }, { status: "unsupported", reason: "no_usage_endpoint" })
+      )
+    ).toBe(true);
   });
 
   it("is false while a provider is stale: backoff can repeat the reading for 900 s", () => {

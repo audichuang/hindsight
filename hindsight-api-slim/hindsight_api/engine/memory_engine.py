@@ -6689,6 +6689,10 @@ class MemoryEngine(MemoryEngineInterface):
             await self._webhook_client.close()
             self._webhook_client = None
 
+        from .llm_quota import drain_detached_refreshes  # fork: cost-accounting
+
+        await drain_detached_refreshes()  # fork: cost-accounting
+
         # Embedding, reranker and LLM provider clients have no close hook of their
         # own; close the aiohttp sessions they opened on this loop.
         from .aiohttp_session import close_loop_sessions
