@@ -850,17 +850,18 @@ def test_response_models_reject_bad_status_values():
         llm_quota.ProviderQuota.model_validate({"provider": "x", "lanes": [], "status": "great"})
 
 
-async def test_trickling_provider_is_cut_off_by_the_total_deadline():
-    """A provider that never finishes (each read inside the per-phase timeout) must not stall /quota."""
+async def test_trickling_provider_is_cut_off_by_the_total_deadline(monkeypatch):
+    """A GET that never finishes (each read inside the per-phase timeout) must not stall /quota."""
 
     async def never_finishes(url, headers):
         await asyncio.sleep(3600)
 
+    monkeypatch.setattr(llm_quota, "QUOTA_FETCH_TIMEOUT_SECONDS", 0.05)
     service = LLMQuotaService(
         _memory(_llm_config=_claude_member()),
         _settings(CLAUDE_TOKEN),
         http_get=never_finishes,
-        cache=QuotaCache(FakeClock(), fetch_timeout_seconds=0.05),
+        cache=QuotaCache(FakeClock()),
     )
     first, second = await asyncio.wait_for(
         asyncio.gather(service.fetch_all("bank-1"), service.fetch_all("bank-1")), timeout=2
@@ -870,74 +871,21 @@ async def test_trickling_provider_is_cut_off_by_the_total_deadline():
     assert _only(second).reason == "timeout"
 
 
-async def test_codex_token_refresh_outlives_the_deadline():
-    """The deadline must not cancel a Codex refresh mid-rotation: the rotated refresh token would be lost."""
+async def test_codex_token_refresh_is_not_under_the_deadline(monkeypatch):
+    """The deadline covers the GET only: a refresh mid-rotation must finish, or the rotated refresh token is lost."""
     member, impl = _codex_member()
     refreshed = asyncio.Event()
 
     async def slow_refresh():
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.2)  # four times the deadline below
         refreshed.set()
 
     impl._ensure_fresh_token = slow_refresh
     impl._build_request_headers = MagicMock(return_value={"Authorization": "Bearer x"})
+    monkeypatch.setattr(llm_quota, "QUOTA_FETCH_TIMEOUT_SECONDS", 0.05)
     http = FakeHttp(lambda url: _ok(_codex_payload()))
-    service = LLMQuotaService(
-        _memory(_llm_config=member),
-        _settings(),
-        http_get=http,
-        cache=QuotaCache(FakeClock(), fetch_timeout_seconds=0.05),
-    )
-    provider = _only(await service.fetch_all("bank-1"))
-    assert (provider.status, provider.reason) == ("error", "timeout")
-    assert not refreshed.is_set()
-    await asyncio.wait_for(refreshed.wait(), timeout=2)
-    assert http.calls == []  # the probe itself was abandoned; only the refresh finished
-
-
-async def test_shutdown_drain_waits_for_a_refresh_the_deadline_left_running():
-    """Engine shutdown closes the loop's HTTP sessions; a refresh still rotating tokens must finish first."""
-    from hindsight_api.engine.llm_quota import _DETACHED_REFRESHES, drain_detached_refreshes
-
-    member, impl = _codex_member()
-    refreshed = asyncio.Event()
-
-    async def slow_refresh():
-        await asyncio.sleep(0.2)
-        refreshed.set()
-
-    impl._ensure_fresh_token = slow_refresh
-    impl._build_request_headers = MagicMock(return_value={"Authorization": "Bearer x"})
-    service = LLMQuotaService(
-        _memory(_llm_config=member),
-        _settings(),
-        http_get=FakeHttp(lambda url: _ok(_codex_payload())),
-        cache=QuotaCache(FakeClock(), fetch_timeout_seconds=0.05),
-    )
-    assert _only(await service.fetch_all("bank-1")).reason == "timeout"
-    assert not refreshed.is_set()
-    await drain_detached_refreshes(timeout=2)
+    service = LLMQuotaService(_memory(_llm_config=member), _settings(), http_get=http, cache=QuotaCache(FakeClock()))
+    provider = _only(await asyncio.wait_for(service.fetch_all("bank-1"), timeout=2))
     assert refreshed.is_set()
-    assert not _DETACHED_REFRESHES
-
-
-async def test_shutdown_drain_is_bounded_and_leaves_a_stuck_refresh_alone():
-    from hindsight_api.engine.llm_quota import drain_detached_refreshes
-
-    member, impl = _codex_member()
-    stuck = asyncio.Event()
-
-    async def never_finishes():
-        await stuck.wait()
-
-    impl._ensure_fresh_token = never_finishes
-    service = LLMQuotaService(
-        _memory(_llm_config=member),
-        _settings(),
-        http_get=FakeHttp(lambda url: _ok(_codex_payload())),
-        cache=QuotaCache(FakeClock(), fetch_timeout_seconds=0.05),
-    )
-    await service.fetch_all("bank-1")
-    await asyncio.wait_for(drain_detached_refreshes(timeout=0.05), timeout=2)
-    stuck.set()  # let the background task end so the test leaves nothing running
-    await drain_detached_refreshes(timeout=2)
+    assert provider.status == "ok"
+    assert len(http.calls) == 1
