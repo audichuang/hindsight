@@ -54,22 +54,9 @@ Each line is marked `# fork: attempt-usage`.
 
 Fork-owned files: `hindsight-api-slim/hindsight_api/engine/llm_attempt_usage.py`, `hindsight-api-slim/hindsight_api/engine/sse_delta_scan.py` (shared with `FORK-CODEX-OUTPUT-CAP.md`), `hindsight-api-slim/tests/test_fork_attempt_usage.py` (behaviour and hook-existence tests), and this file.
 
-## Related fix: the Codex stream ceiling
+## The Codex stream ceiling
 
-Two commits with no marker (an upstream defect), `fix(codex): stop abandoning long replies as runaway streams` and `fix(codex): set the stream ceiling to 8 MiB so it trips before the deadline`, raise `_MAX_SSE_BODY_CHARS` in `codex_llm.py` from 4 MiB to 8 MiB. Drop both when upstream changes the guard. Their regression test is `tests/test_fork_codex_sse_ceiling.py`.
-
-- The guard counts the raw SSE body. Measured on the ChatGPT backend (gpt-6.1-sol, 2026-10-20), each output token arrives as one delta event of about 287 characters, so 4 MiB ended replies at about 14.6k output tokens. Split-synthesis map calls of a mental-model refresh reach 13-14k in normal operation: in one week the longest successful one was 13.6k, and 31 failed as `exceeded 4194304 characters`. `CodexLLM` never sends `max_completion_tokens`, so nothing else bounds a Codex reply.
-- 8 MiB is about 29k output tokens, roughly twice the longest reply seen. That distribution was truncated at 4 MiB, so the margin is a judgment, not a measurement.
-- The ceiling must also trip before the per-attempt deadline. The deployment streams long refresh replies at 43-66 output tokens/s (p50-p95), so 8 MiB fills in about 440-680 s, inside the refresh lane's 900 s deadline. The first commit's 16 MiB (~58k tokens) needed 880-1350 s: the deadline, not the size, ended nearly every runaway, and a runaway call cost up to (retries + 1) x timeout plus backoff (2 x 900 s + 30 s with the deployment's `MENTAL_MODEL_REFRESH_LLM_MAX_RETRIES=1`) instead of 400-840 s. A runaway slower than ~32 tokens/s still reaches the deadline first.
-- Map calls of one refresh run concurrently (`asyncio.gather`), so two runaway maps overlap in time rather than adding up.
-
-The delta-count cap is a separate patch, `FORK-CODEX-OUTPUT-CAP.md` (`HINDSIGHT_API_CODEX_MAX_OUTPUT_DELTAS`, off by default). It has its own counter in `_iter_sse_lines`, because the attempt meter here counts only with the cost flag on and a safety bound must not depend on it. Both count with the same scanner, `engine/sse_delta_scan.py` (every `event: response.<...>.delta` line, lines split as `_iter_sse_lines` splits them, a lone `\r` included). The order inside a chunk is: attempt meter, then the 8 MiB body ceiling, then the delta cap, so the meter counts the chunk that trips either guard. The delta cap is meant to trip first. The recommended 25000 is below the ~29k deltas that 8 MiB holds, so the body ceiling remains the second guard, for a backend whose envelope or event names change.
-
-### Not done
-
-- **`max_output_tokens` through the lane's extra body**: a live check (2026-10-20) showed the backend accepts it and ends the stream with `response.incomplete` (`reason: max_output_tokens`; the cap includes reasoning tokens). `CodexLLM` does not treat `response.incomplete` as a failure, so it returns the truncated reply as a success. Setting the cap without first handling that event would hand a map call a silently cut claims list.
-- **Smaller map chunks** (`REFLECT_MAX_CONTEXT_TOKENS` is global and also bounds the agent loop and single-pass reflect; a map-only chunk size is new code) and **a terser map prompt** (upstream product behaviour, deliberately exhaustive since #3122) are left as suggestions for upstream.
-- **Stalls**: a call that streams almost nothing until the deadline (one `reflect_tool_call` in a week) is bound only by the deadline; no size or count guard sees it.
+The 8 MiB raw-body ceiling (`_MAX_SSE_BODY_CHARS`) and the delta-count cap that complements it are described in `FORK-CODEX-OUTPUT-CAP.md`, together with what was left out (`max_output_tokens`, smaller map chunks, stalls). The attempt meter counts the chunk that trips either guard.
 
 ## Maintaining the patch
 

@@ -1,6 +1,6 @@
 # Fork: Codex output cap (stop a runaway by delta count)
 
-`CodexLLM` never sends a token limit to the ChatGPT backend, so a reply that runs away is bounded only by the raw-body ceiling `_MAX_SSE_BODY_CHARS` (8 MiB, see "Related fix" in `FORK-ATTEMPT-USAGE.md`) and the per-attempt wall-clock deadline. The body ceiling counts characters of the SSE stream, envelope included. This patch adds a bound on what the model generates instead: an attempt that streams more than N output delta events is abandoned with the same `CodexRunawayStreamError` the body ceiling raises.
+`CodexLLM` never sends a token limit to the ChatGPT backend, so a reply that runs away is bounded only by the raw-body ceiling `_MAX_SSE_BODY_CHARS` (8 MiB, see "Related fix: the 8 MiB stream ceiling" below) and the per-attempt wall-clock deadline. The body ceiling counts characters of the SSE stream, envelope included. This patch adds a bound on what the model generates instead: an attempt that streams more than N output delta events is abandoned with the same `CodexRunawayStreamError` the body ceiling raises.
 
 It is off unless `HINDSIGHT_API_CODEX_MAX_OUTPUT_DELTAS` is set. With it unset, behaviour is byte-for-byte upstream (plus the body-ceiling fix).
 
@@ -27,7 +27,7 @@ After enabling it, watch the logs for `output delta events (HINDSIGHT_API_CODEX_
 
 - **Count deltas, not characters.** One `*.delta` event per output token was measured on the ChatGPT backend (gpt-6.1-sol, 2026-10-20: 4,776 `response.output_text.delta` events for 4,782 visible output tokens). The characters per delta depend on the envelope (event line, JSON with sequence number, item id and obfuscation padding), about 287, and change with the reply length and with any backend change to the envelope. A delta count stays in output tokens.
 - **Which events count: every `event: response.<...>.delta`.** In the Responses API every delta event carries model-generated output: visible text (`output_text`, and the legacy `text` / `content_part` names the parsers also read), refusal text, function call arguments, reasoning summary text, reasoning text, custom tool input. Each grows without bound when generation runs away. A tool call whose arguments never close is a runaway too, and `call_with_tools` (the reflect agent) would otherwise be uncapped. Events that do not carry new output (`*.added`, `*.done`, `response.created`, `in_progress`, `completed`, keep-alive comments) are not counted. The attempt meter of `FORK-ATTEMPT-USAGE.md` uses the same scanner (`engine/sse_delta_scan.py`) for its output estimate, so a cap of N stops an attempt the meter counts as N+1 output tokens or more. Reasoning summary deltas are a few per reply (one in a live check at low effort), so they barely move the count.
-- **Reasoning tokens are not counted.** The backend sends reasoning encrypted at the end of the reply and does not stream it. Neither this cap nor the body ceiling sees it. A runaway inside reasoning streams nothing and is bound by the deadline (the same as the "stalls" item in `FORK-ATTEMPT-USAGE.md`).
+- **Reasoning tokens are not counted.** The backend sends reasoning encrypted at the end of the reply and does not stream it. Neither this cap nor the body ceiling sees it. A runaway inside reasoning streams nothing and is bound by the deadline (the same as the "stalls" item under "Not done" below).
 - **Independent of the cost flag.** The attempt meter counts only with `HINDSIGHT_API_LLM_COST_ENABLED` on. A safety bound must not turn off with cost accounting, so this patch has its own counter instead of reading the meter. The two scan the same chunks, a few string operations per chunk. With the cap unset, its counter returns at once.
 - **Per attempt.** Each streamed request starts from zero. A retry after a runaway gets the full cap again, as it gets a fresh deadline and a fresh body count.
 - **Same line rule as the parser.** Lines are split the way `_iter_sse_lines` splits them (`str.splitlines`: `\n`, `\r\n` and a lone `\r`, a `\r\n` cut between two chunks counted once). A counter that split on `\n` only, as the first version did, saw no event at all in a body with CR-only line ends while the parser read every line, so the cap could be bypassed.
@@ -38,11 +38,28 @@ After enabling it, watch the logs for `output delta events (HINDSIGHT_API_CODEX_
   - The message names the cap and the variable: `Codex response exceeded 25000 output delta events (HINDSIGHT_API_CODEX_MAX_OUTPUT_DELTAS) without completing; abandoning the stream`.
 - **Order inside a chunk.** The attempt meter is fed first, then the body ceiling is checked, then the delta cap. The meter therefore counts the chunk that trips either guard. The cap counts the whole chunk before checking, so the stream is abandoned at the chunk that crosses N, and none of that chunk's lines reach the parser.
 - **Validated in `CodexLLM.__init__`**, next to the deadline it complements. That is where a Codex lane is built at startup (the same pattern as rerank routing validating when the reranker chain is built). No hook in a server or worker `main`.
-- **Not `max_output_tokens`.** The backend accepts it, but it ends the stream with `response.incomplete`, which `CodexLLM` returns as a successful, silently truncated reply (see "Not done" in `FORK-ATTEMPT-USAGE.md`). A runaway error is retried and visible. A truncated success is neither.
+- **Not `max_output_tokens`.** The backend accepts it, but it ends the stream with `response.incomplete`, which `CodexLLM` returns as a successful, silently truncated reply (see "Not done" below). A runaway error is retried and visible. A truncated success is neither.
 
 Live check (2026-10-20, gpt-6.1-sol, reasoning effort low, cap 50, a request for a 200-line list): the call raised `CodexRunawayStreamError` with the message above. The body that arrived held 51 delta events, 1 `response.reasoning_summary_text.delta` and 50 `response.output_text.delta`, so the stream was dropped at the 51st delta.
 
 Tool-argument granularity (2026-10-20, gpt-6.1-sol, reasoning effort low, no cap, `call_with_tools` with the tool forced, asked for 150 structured claims): 3,631 `response.function_call_arguments.delta` events for 3,645 output tokens (no reasoning tokens), 0.996 deltas per token, about 4.9 argument characters per delta. The body was 985,400 characters, about 271 per delta. Tool arguments therefore count the same as text, one delta per token, and 25000 stops a tool call at about 25k output tokens. Normal reflect tool calls are far shorter than a split-synthesis map reply, so the cap does not cut them off.
+
+## Related fix: the 8 MiB stream ceiling
+
+One line in `codex_llm.py`, marked `# fork: codex-output-cap`, raises `_MAX_SSE_BODY_CHARS` from upstream's 4 MiB to 8 MiB. It is an upstream defect fix, independent of the delta cap and active whether or not `HINDSIGHT_API_CODEX_MAX_OUTPUT_DELTAS` is set, and it can be offered upstream as it stands. Upstream's comment above the constant is left as upstream wrote it; its claim that a structured-output call is bounded by `max_completion_tokens` does not hold for `CodexLLM`, which never sends a token limit (the first bullet). Drop the line when upstream changes the guard. Its regression test is `tests/test_fork_codex_sse_ceiling.py`.
+
+- The guard counts the raw SSE body. Measured on the ChatGPT backend (gpt-6.1-sol, 2026-10-20), each output token arrives as one delta event of about 287 characters, so 4 MiB ended replies at about 14.6k output tokens. Split-synthesis map calls of a mental-model refresh reach 13-14k in normal operation: in one week the longest successful one was 13.6k, and 31 failed as `exceeded 4194304 characters`. `CodexLLM` never sends `max_completion_tokens`, so nothing else bounds a Codex reply.
+- 8 MiB is about 29k output tokens, roughly twice the longest reply seen. That distribution was truncated at 4 MiB, so the margin is a judgment, not a measurement.
+- The ceiling must also trip before the per-attempt deadline. The deployment streams long refresh replies at 43-66 output tokens/s (p50-p95), so 8 MiB fills in about 440-680 s, inside the refresh lane's 900 s deadline. The first commit's 16 MiB (~58k tokens) needed 880-1350 s: the deadline, not the size, ended nearly every runaway, and a runaway call cost up to (retries + 1) x timeout plus backoff (2 x 900 s + 30 s with the deployment's `MENTAL_MODEL_REFRESH_LLM_MAX_RETRIES=1`) instead of 400-840 s. A runaway slower than ~32 tokens/s still reaches the deadline first.
+- Map calls of one refresh run concurrently (`asyncio.gather`), so two runaway maps overlap in time rather than adding up.
+
+The delta cap is meant to trip first. The recommended 25000 is below the ~29k deltas that 8 MiB holds, so the body ceiling remains the second guard, for a backend whose envelope or event names change.
+
+### Not done
+
+- **`max_output_tokens` through the lane's extra body**: a live check (2026-10-20) showed the backend accepts it and ends the stream with `response.incomplete` (`reason: max_output_tokens`; the cap includes reasoning tokens). `CodexLLM` does not treat `response.incomplete` as a failure, so it returns the truncated reply as a success. Setting the cap without first handling that event would hand a map call a silently cut claims list.
+- **Smaller map chunks** (`REFLECT_MAX_CONTEXT_TOKENS` is global and also bounds the agent loop and single-pass reflect; a map-only chunk size is new code) and **a terser map prompt** (upstream product behaviour, deliberately exhaustive since #3122) are left as suggestions for upstream.
+- **Stalls**: a call that streams almost nothing until the deadline (one `reflect_tool_call` in a week) is bound only by the deadline; no size or count guard sees it.
 
 ## Hooks
 
@@ -54,6 +71,7 @@ Each line is marked `# fork: codex-output-cap`.
 | C2 | `hindsight-api-slim/hindsight_api/engine/providers/codex_llm.py`, `CodexLLM.__init__` | a local import of `CodexOutputCap` and `self._fork_output_cap = CodexOutputCap.from_env()` right after `self._request_timeout = self.timeout or _DEFAULT_CODEX_TIMEOUT` |
 | C3 | same file, `_iter_sse_lines` | `deltas = self._fork_output_cap.begin_attempt()` after `attempt = begin_codex_attempt()` (attempt-usage A6) |
 | C4 | same file, `_iter_sse_lines` | `deltas.feed(text)` after the `_MAX_SSE_BODY_CHARS` check's `raise` block, before `if not _LINE_BREAK_RE.search(text):` |
+| C5 | same file, module level | `_MAX_SSE_BODY_CHARS = 8 * 1024 * 1024` with the marker on the same line (upstream: `4 * 1024 * 1024`); upstream's comment above it is unchanged. See "Related fix" |
 
 `call` and `call_with_tools` both read the body through `_iter_sse_lines` (`_parse_sse_stream` and `_parse_sse_tool_stream`), so C3 and C4 cover both.
 

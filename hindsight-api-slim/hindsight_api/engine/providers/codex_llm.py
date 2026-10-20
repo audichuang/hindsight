@@ -142,25 +142,10 @@ _DEFAULT_CODEX_TIMEOUT = 120.0
 # multi-byte body is cut off a little later than the name suggests, which is
 # fine for a backstop). The Codex backend can wedge
 # into runaway generation and emit megabytes of deltas for a request whose real
-# answer is a few hundred bytes (issue #3898).
-#
-# The count is the raw SSE body, not the answer. Measured on the ChatGPT backend
-# (gpt-6.1-sol, 2026-10-20): one ``*.delta`` event per output token, each about
-# 287 characters on the wire (event line, JSON envelope with sequence number,
-# item id and obfuscation padding, blank line). ``max_completion_tokens`` is
-# never put into the request, so nothing caps a reply on the server side. At
-# 4 MiB (~14.6k deltas) the ceiling cut legitimate replies off: split-synthesis
-# map calls ("list every relevant claim" over a context-sized chunk) reach
-# 13-14k output tokens routinely.
-#
-# 8 MiB is ~29k deltas, about twice the longest reply seen in production (that
-# distribution was itself truncated at 4 MiB, so the margin is a judgment). At
-# the observed 43-66 output tokens/s it trips after roughly 440-680 s, before a
-# 900 s per-attempt deadline, so a runaway is still cut off by size. A runaway
-# streaming slower than ~32 tokens/s reaches the deadline first; it then costs
-# up to (retries + 1) x timeout plus backoff. A larger ceiling would leave the
-# deadline as the only bound at normal speed.
-_MAX_SSE_BODY_CHARS = 8 * 1024 * 1024
+# answer is a few hundred bytes (issue #3898); a structured-output call bounded
+# by ``max_completion_tokens`` never approaches this, so blowing past it means
+# the stream is not going to end on its own.
+_MAX_SSE_BODY_CHARS = 8 * 1024 * 1024  # fork: codex-output-cap (upstream 4 MiB; see FORK-CODEX-OUTPUT-CAP.md)
 
 
 # The characters ``str.splitlines`` breaks a line on.
