@@ -11,8 +11,9 @@ This module keeps a ledger of a Codex call's attempts and, when the trace row is
 replaces its token counts with the sum over the attempts:
 
 - an attempt that stashed usage counts that usage (the last stash of the attempt);
-- an attempt that received deltas but stashed nothing counts an estimate: the call's
-  messages at chars/4 for input, and one output token per delta event received;
+- an attempt that received deltas but stashed nothing counts an estimate: for input, the
+  provider-counted input of another attempt of the call (same messages), else the messages at
+  chars/4; for output, one token per delta event received;
 - an attempt that received no delta event counts nothing (the request never ran).
 
 The row is marked ``usage_source="estimate"`` whenever any counted attempt was estimated
@@ -187,7 +188,12 @@ def _totals(attempts: list[_Attempt], messages: object) -> _Totals | None:
     counted = [a for a in attempts if a.usage is not None or a.delta_events > 0]
     if not counted:
         return None
-    input_estimate = _message_chars(messages) // 4
+    # Every attempt of a call sends the same messages, so an attempt with provider counts gives the
+    # runaway attempts' input exactly; chars/4 is the fallback (a lower bound: provider counts run
+    # ~1.5x chars/4 on the reference deployment's refresh inputs). Cached tokens are not copied: whether
+    # the runaway attempt hit the prompt cache is unknown, so its input is priced uncached.
+    provider_inputs = [a.usage.input_tokens for a in counted if a.usage is not None and not a.estimated]
+    input_estimate = provider_inputs[-1] if provider_inputs else _message_chars(messages) // 4
     input_tokens = output_tokens = cached_tokens = thoughts_tokens = 0
     write_counts: list[int] = []
     estimated = False
