@@ -167,7 +167,8 @@ async def test_runaway_then_success_adds_both_attempts(cost_on, recorder):
     assert result.content == "answer"
     [row] = recorder.records
     assert row.status == "success"
-    assert row.input_tokens == 50_000 + _INPUT_ESTIMATE
+    # The runaway sent the same messages as the attempt that completed: its input is that count.
+    assert row.input_tokens == 2 * 50_000
     assert row.cached_tokens == 40_000
     assert row.thoughts_tokens == 300
     assert row.output_tokens - 700 in _DELTAS_PER_RUNAWAY
@@ -223,11 +224,11 @@ async def test_inert_with_the_feature_off(recorder):
 async def test_concurrent_calls_keep_separate_ledgers(cost_on, recorder):
     import asyncio
 
-    first = _wrapper([_runaway(), _completed("a", _usage(1000, 10))])
+    first = _wrapper([_runaway(), _completed("a", _usage(1200, 10))])
     second = _wrapper([_completed("b", _usage(3000, 20))])
     await asyncio.gather(_call(first), _call(second))
     rows = sorted(recorder.records, key=lambda r: r.input_tokens or 0)
-    assert rows[0].input_tokens == 1000 + _INPUT_ESTIMATE
+    assert rows[0].input_tokens == 2 * 1200
     assert (rows[1].input_tokens, rows[1].output_tokens) == (3000, 20)
     assert _usage_marker(rows[1])["usage_source"] == "provider"
 
