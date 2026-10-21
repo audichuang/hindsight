@@ -751,12 +751,17 @@ class CodexLLM(LLMInterface):
                         output_tokens=estimated_output,
                         total_tokens=estimated_input + estimated_output,
                     )
+                from hindsight_api.engine.llm_cost import alias_codex_usage_note  # fork: attempt-usage
+
                 stash_response_usage(
-                    LLMResponseUsage(
-                        input_tokens=token_usage.input_tokens,
-                        output_tokens=token_usage.output_tokens,
-                        cached_tokens=token_usage.cached_tokens,
-                        thoughts_tokens=token_usage.thoughts_tokens,
+                    alias_codex_usage_note(  # fork: attempt-usage (the stashed copy keeps the cost note)
+                        token_usage,
+                        LLMResponseUsage(
+                            input_tokens=token_usage.input_tokens,
+                            output_tokens=token_usage.output_tokens,
+                            cached_tokens=token_usage.cached_tokens,
+                            thoughts_tokens=token_usage.thoughts_tokens,
+                        ),
                     )
                 )
 

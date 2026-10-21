@@ -51,6 +51,7 @@ Each line is marked `# fork: attempt-usage`.
 | A4 | same file, `reset_response_usage` | `close_call_ledger()` before the `reset` |
 | A5 | same file, `LLMTraceRecorder.record_llm_call` | the decorator `@fold_attempt_usage`. Every caller passes keywords (the tracing fan-out does); a positional call is passed through unfolded |
 | A6 | `hindsight-api-slim/hindsight_api/engine/providers/codex_llm.py`, `_iter_sse_lines` | a local import of `begin_codex_attempt`, `attempt = begin_codex_attempt()` before the decoder, and `attempt.feed(text)` right after `seen_chars += len(text)` |
+| A7 | same file, `call()` | a local import of `alias_codex_usage_note`, and the `LLMResponseUsage` copy that upstream stashes wrapped in `alias_codex_usage_note(token_usage, ...)`, so the cost note taken on the parsed usage also belongs to the stashed copy |
 
 Fork-owned files: `hindsight-api-slim/hindsight_api/engine/llm_attempt_usage.py`, `hindsight-api-slim/hindsight_api/engine/sse_delta_scan.py` (shared with `FORK-CODEX-OUTPUT-CAP.md`), `hindsight-api-slim/tests/test_fork_attempt_usage.py` (behaviour and hook-existence tests), and this file.
 
@@ -75,11 +76,11 @@ The delta-count cap is a separate patch, `FORK-CODEX-OUTPUT-CAP.md` (`HINDSIGHT_
 
 After each rebase, re-diff `llm_trace.py` (`set_response_usage`, `stash_response_usage`, `reset_response_usage`, `LLMTraceRecorder.record_llm_call` and its keyword arguments), the wrapper's use of those three functions in `LLMProvider.call` and `call_with_tools` (set at call start, reset in `finally`), and `codex_llm.py` (`_iter_sse_lines`, the stash sites, and the retry loops in `call` and `call_with_tools`).
 
-### Rebasing onto a release that contains upstream #5693
+### Upstream #5693 (in v1.1.0)
 
-Upstream #5693 (`dcc3ee421`, "report real token usage for Codex, Claude Code and Anthropic") rewrites `codex_llm.py` around `_CodexStreamReply`. On `origin/main` at `c5f585f8f` (which contains #5693), `_iter_sse_lines` and the size guard are unchanged by it: the branch's whole `codex_llm.py` diff (A6 and both ceiling commits) applies with a plain `git apply --check`. What changes is how usage is stashed:
+Upstream #5693 (`dcc3ee421`, "report real token usage for Codex, Claude Code and Anthropic") rewrote `codex_llm.py` around `_CodexStreamReply`. `_iter_sse_lines` and the size guard were unchanged by it, so A6 and both ceiling commits applied as they were. What changed is how usage is stashed:
 
-- `call()` stashes once per attempt, after the stream is parsed, a new `LLMResponseUsage` copied from `reply.usage` (or the chars/4 fallback when `reply.usage` is None). A runaway still raises before the stash, so the ledger's delta estimate still applies.
-- The usage object that is stashed is no longer the object `_usage_from_completed_event` built. So the identity check in `note_stashed_usage` (through `codex_usage_kwargs`) sees every stash as an estimate unless H16 of the cost accounting is re-anchored to note the stashed object when `reply.usage is not None`: pass the `LLMResponseUsage` given to `stash_response_usage` as the first argument of `note_codex_usage`, and as the second whatever H16's current signature takes (see the H16 row of `FORK-COST-ACCOUNTING.md`). Since the cost-quota fixes that is the raw `response.completed` event, which the stash site of #5693 does not have: `_CodexStreamReply` has to keep it. Without the re-anchor, retried calls that never ran away are marked `estimate`.
+- `call()` stashes once per attempt, after the stream is parsed, a new `LLMResponseUsage` copied from `token_usage` (`reply.usage`, or the chars/4 fallback when `reply.usage` is None). A runaway still raises before the stash, so the ledger's delta estimate still applies.
+- The stashed object is not the one the cost note (H16, in `_usage_from_completed_event`) was taken on, so the identity check in `note_stashed_usage` (through `codex_usage_kwargs`) would read every stash as an estimate. A7 aliases the note onto the copy: `alias_codex_usage_note` adds the copy to the note's owners when `token_usage` was noted, and leaves a copy of the chars/4 fallback unnoted.
 - `call_with_tools` no longer stashes. Its success row is still counted correctly (the success row is authoritative for its own attempt), but an earlier parse-failed attempt in that path has nothing to count. It has no parse retry today, so nothing is lost.
-- `test_fork_attempt_usage.py::test_parse_failure_retry_adds_both_provider_usages` fails if the H16 re-anchor is missing, and `test_codex_keeps_the_attempt_meter_hooks` fails if A6 is lost.
+- `test_fork_attempt_usage.py::test_parse_failure_retry_adds_both_provider_usages` fails if the alias is missing, `test_codex_call_keeps_the_stash_alias_hook` if A7 is lost, and `test_codex_keeps_the_attempt_meter_hooks` if A6 is lost.

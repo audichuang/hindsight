@@ -281,3 +281,10 @@ def test_codex_keeps_the_attempt_meter_hooks():
         "            attempt.feed(text)  # fork: attempt-usage\n            if seen_chars > _MAX_SSE_BODY_CHARS:"
         in body
     )
+
+
+def test_codex_call_keeps_the_stash_alias_hook():
+    """Upstream's call() stashes a copy of the parsed usage; the alias keeps the cost note on that copy."""
+    body = inspect.getsource(CodexLLM.call)
+    assert "from hindsight_api.engine.llm_cost import alias_codex_usage_note  # fork: attempt-usage" in body
+    assert "stash_response_usage(\n                    alias_codex_usage_note(  # fork: attempt-usage" in body

@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, tzinfo
 from decimal import Decimal
 from functools import cache
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypeVar
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -628,7 +628,8 @@ def claude_code_usage_kwargs(raw_usage: object) -> dict[str, CallUsage]:
     return _guarded(build)
 
 
-_codex_pending: ContextVar[tuple[object, CallUsage] | None] = ContextVar("fork_codex_usage", default=None)
+# The usage objects a note belongs to (the parsed one and any copy aliased to it) and its breakdown.
+_codex_pending: ContextVar[tuple[tuple[object, ...], CallUsage] | None] = ContextVar("fork_codex_usage", default=None)
 
 
 class _CodexCostResponse(BaseModel):
@@ -669,7 +670,7 @@ def note_codex_usage(result: object, event: object) -> None:
         return
     try:
         writes = _codex_cache_writes(event)
-        _codex_pending.set((result, CallUsage(cache_write_tokens=writes, usage_source="provider")))
+        _codex_pending.set(((result,), CallUsage(cache_write_tokens=writes, usage_source="provider")))
     except Exception as exc:
         logger.debug("LLM cost Codex usage not noted: %s", type(exc).__name__)
         _codex_pending.set(None)
@@ -680,11 +681,27 @@ def codex_usage_kwargs(usage: object) -> dict[str, CallUsage]:
 
     def build() -> CallUsage:
         pending = _codex_pending.get()
-        if pending is not None and pending[0] is usage:
+        if pending is not None and any(owner is usage for owner in pending[0]):
             return pending[1]
         return CallUsage(usage_source="estimate")
 
     return _guarded(build)
+
+
+_Alias = TypeVar("_Alias")
+
+
+def alias_codex_usage_note(noted: object, alias: _Alias) -> _Alias:
+    """Let the note of ``noted`` also belong to ``alias``, and return ``alias``.
+
+    Upstream's ``call()`` stashes a copy of the parsed usage (#5693), not the object the note was taken
+    on, so without this the attempt ledger would read every Codex stash as an estimate. A copy of
+    anything that was not noted (the chars/4 fallback) stays unnoted.
+    """
+    pending = _codex_pending.get()
+    if pending is not None and any(owner is noted for owner in pending[0]):
+        _codex_pending.set(((*pending[0], alias), pending[1]))
+    return alias
 
 
 def openai_compatible_usage_kwargs(provider: str, base_url: str | None, response: object) -> dict[str, CallUsage]:
