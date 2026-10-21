@@ -2,9 +2,9 @@
 # Reviewer inputs for a rebase of the fork onto a new upstream tag (FORK.md "Before tagging", step 3).
 # Usage: scripts/fork/review-bundle.sh <old-tag> <old-fork-head> <new-tag> <new-head> <out-dir>
 # Writes:
-#   range-diff.txt          fork commits whose patch changed in the rebase, and the dropped and added ones
+#   range-diff.txt          fork commits whose patch (not just message) changed, and the dropped and added ones
 #   extra-commits.diff      commits that exist only on the new side (the rebase's own fixes)
-#   upstream-touching.diff  upstream <old-tag>..<new-tag> changes to the files the changed fork commits touch
+#   upstream-touching.diff  upstream <old-tag>..<new-tag> changes to the files any changed, dropped or added commit touches (old and new side)
 #   fork-tests.txt          every fork test file: deleted, changed (with the test functions that disappeared) or same
 #   README.txt
 set -euo pipefail
@@ -12,22 +12,28 @@ old=$1 oldhead=$2 new=$3 head=$4 out=$5
 mkdir -p "$out"
 
 git range-diff --no-color "$old..$oldhead" "$new..$head" > "$out/range-diff.full.txt"
-# Keep a "!" entry only when its patch changed: `cherry-pick -x` alone changes every commit message.
-awk '
-  function flush() { if (head != "" && (kind != "!" || code)) printf "%s", buf; buf = ""; head = ""; code = 0 }
-  /^ *([0-9]+|-): +[0-9a-f-]+ [=!<>] / { flush(); head = $0; kind = $3; if (kind == "=") head = ""; else buf = $0 "\n"; next }
-  head != "" { buf = buf $0 "\n"; if ($0 ~ /^    @@ / && $0 !~ /@@ (Metadata|Commit message)/) code = 1 }
-  END { flush() }
-' "$out/range-diff.full.txt" > "$out/range-diff.txt"
 
-changed=$(awk '/^ *([0-9]+|-): +[0-9a-f-]+ [!>] / { print $5 }' "$out/range-diff.txt" | grep -E '^[0-9a-f]{7,}$' || true)
-extra=$(awk '/^ *-: +-+ > / { print $5 }' "$out/range-diff.full.txt" || true)
-: > "$out/extra-commits.diff"
-for c in $extra; do git show --stat --patch "$c" >> "$out/extra-commits.diff"; done
-
-# Dropped commits (upstream has the fix now) count too: their upstream replacement is what to check.
-dropped=$(awk '/^ *[0-9]+: +[0-9a-f]+ < / { print $2 }' "$out/range-diff.txt" | grep -E '^[0-9a-f]{7,}$' || true)
-files=$(for c in $changed $dropped; do git show --name-only --format= "$c"; done | sort -u)
+# Pair old and new commits with range-diff, then judge each pair by patch-id: `cherry-pick -x` changes every
+# message, and range-diff can file a removed hunk under "@@ Metadata", so its own hunk headings cannot tell.
+pid() { git show --format= "$1" | git patch-id --stable | cut -d' ' -f1; }
+paths() { git show --name-only --format= "$1"; }
+: > "$out/range-diff.txt"; : > "$out/extra-commits.diff"; : > "$out/paths"
+n_changed=0 n_extra=0
+while read -r line; do
+  set -- $line
+  case "$3" in
+    '!')
+      [ "$(pid "$2")" = "$(pid "$5")" ] && continue   # message-only change
+      git range-diff --no-color "$2^!" "$5^!" >> "$out/range-diff.txt"
+      { paths "$2"; paths "$5"; } >> "$out/paths"; n_changed=$((n_changed + 1)) ;;
+    '<')   # dropped: upstream's replacement is what to check
+      echo "$line" >> "$out/range-diff.txt"; paths "$2" >> "$out/paths" ;;
+    '>')
+      echo "$line" >> "$out/range-diff.txt"; git show --stat --patch "$5" >> "$out/extra-commits.diff"
+      paths "$5" >> "$out/paths"; n_extra=$((n_extra + 1)) ;;
+  esac
+done < <(git range-diff --no-color -s "$old..$oldhead" "$new..$head")
+files=$(sort -u "$out/paths"); rm -f "$out/paths"
 if [ -n "$files" ]; then
   # shellcheck disable=SC2086
   git diff "$old" "$new" -- $files > "$out/upstream-touching.diff"
@@ -36,11 +42,13 @@ else
 fi
 
 # Test names in a file: Python test functions and methods, and the titles of it()/test() cases (TS/JS),
-# including parameterised it.each([...])("title", ...).
+# parameterised it.each(table)("title") included; a call may span lines.
 test_names() {
-  sed -nE -e 's/^[[:space:]]*(async )?def (test_[A-Za-z0-9_]+).*/\2/p' \
-    -e "s/^[[:space:]]*(it|test)\.each\(.*\)\([[:space:]]*['\"\`]([^'\"\`]+).*/each: \2/p" \
-    -e "s/^[[:space:]]*(it|test)(\.[a-z]+)?\([[:space:]]*['\"\`]([^'\"\`]+).*/\3/p" | sort -u
+  perl -0777 -ne '
+    print "$1\n" while /^[ \t]*(?:async[ \t]+)?def[ \t]+(test_\w+)/mg;
+    print "$2\n" while /\b(?:it|test)(?:\.(?:only|skip|todo|concurrent|fails))*\s*\(\s*([\x27"`])((?:(?!\1).)*)\1/sg;
+    print "each: $3\n" while /\b(?:it|test)(?:\.\w+)*\.each\s*(\((?:[^()]++|(?1))*\)|`[^`]*`)\s*\(\s*([\x27"`])((?:(?!\2).)*)\2/sg;
+  ' | sort -u
 }
 
 # A test the rebase deleted or relaxed may have guarded fork behaviour that upstream's replacement lacks.
@@ -62,8 +70,8 @@ test_names() {
 
 cat > "$out/README.txt" <<EOF
 old=$old old-head=$oldhead new=$new new-head=$head
-changed-or-added fork commits: $(echo "$changed" | grep -c . || true)
-rebase-only extra commits: $(echo "$extra" | grep -c . || true)
+fork commits whose patch changed: $n_changed
+rebase-only extra commits: $n_extra
 fork test files deleted: $(grep -c '^DELETED' "$out/fork-tests.txt" || true), changed: $(grep -c '^changed' "$out/fork-tests.txt" || true)
 range-diff.txt          fork commits whose content changed in the rebase (old vs new patch)
 extra-commits.diff      commits the rebase added (re-anchors, fixes)

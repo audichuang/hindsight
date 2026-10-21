@@ -50,7 +50,7 @@ step "generated files (upstream's verify-generated-files, minus the Rust client)
 [ -z "$(git status --porcelain)" ] || { git status --short; fail "generated files are stale or new; commit the files above"; }
 
 step "fork rebase tooling"
-bash scripts/fork/rebase-onto.test.sh >/dev/null || fail "scripts/fork/rebase-onto.test.sh"
+for t in rebase-onto review-bundle; do bash "scripts/fork/$t.test.sh" >/dev/null || fail "scripts/fork/$t.test.sh"; done
 
 step "fork tests (added or changed since $base)"
 tests=()  # macOS ships bash 3.2: no mapfile
