@@ -25,13 +25,21 @@ extra=$(awk '/^ *-: +-+ > / { print $5 }' "$out/range-diff.full.txt" || true)
 : > "$out/extra-commits.diff"
 for c in $extra; do git show --stat --patch "$c" >> "$out/extra-commits.diff"; done
 
-files=$(for c in $changed; do git show --name-only --format= "$c"; done | sort -u)
+# Dropped commits (upstream has the fix now) count too: their upstream replacement is what to check.
+dropped=$(awk '/^ *[0-9]+: +[0-9a-f]+ < / { print $2 }' "$out/range-diff.txt" | grep -E '^[0-9a-f]{7,}$' || true)
+files=$(for c in $changed $dropped; do git show --name-only --format= "$c"; done | sort -u)
 if [ -n "$files" ]; then
   # shellcheck disable=SC2086
   git diff "$old" "$new" -- $files > "$out/upstream-touching.diff"
 else
   : > "$out/upstream-touching.diff"
 fi
+
+# Test names in a file: Python test functions and methods, and the titles of it()/test() cases (TS/JS).
+test_names() {
+  sed -nE -e 's/^[[:space:]]*(async )?def (test_[A-Za-z0-9_]+).*/\2/p' \
+    -e "s/^[[:space:]]*(it|test)(\.[a-z]+)?\([[:space:]]*['\"\`]([^'\"\`]+).*/\3/p" | sort -u
+}
 
 # A test the rebase deleted or relaxed may have guarded fork behaviour that upstream's replacement lacks.
 {
@@ -42,10 +50,9 @@ fi
     elif [ "$(git rev-parse "$oldhead:$f")" = "$(git rev-parse "$head:$f")" ]; then
       echo "same     $f"
     else
-      gone=$(comm -23 <(git show "$oldhead:$f" | grep -oE '^(async )?def test_[A-Za-z0-9_]+' | sed 's/^async //' | sort -u) \
-                      <(git show "$head:$f" | grep -oE '^(async )?def test_[A-Za-z0-9_]+' | sed 's/^async //' | sort -u))
+      gone=$(comm -23 <(git show "$oldhead:$f" | test_names) <(git show "$head:$f" | test_names))
       echo "changed  $f"
-      [ -z "$gone" ] || echo "$gone" | sed 's/^def /    removed: /'
+      [ -z "$gone" ] || echo "$gone" | sed 's/^/    removed: /'
     fi
   done
 } > "$out/fork-tests.txt"

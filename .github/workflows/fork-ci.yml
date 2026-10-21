@@ -162,11 +162,15 @@ jobs:
         uv run generate-openapi
         git diff --exit-code -- ../hindsight-docs/static/openapi.json
 
+    - name: Fork rebase tooling
+      run: bash scripts/fork/rebase-onto.test.sh
+
     - name: Generated docs skill and bank-template schema are up to date
       run: |
         ./scripts/generate-bank-template-schema.sh
         ./scripts/generate-docs-skill.sh
-        git diff --exit-code
+        git status --porcelain
+        test -z "$(git status --porcelain)"
 
   control-plane:
     runs-on: ubuntu-latest

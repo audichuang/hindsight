@@ -33,8 +33,9 @@ step "ty check"
 (cd hindsight-api-slim && uv run ty check) || fail "ty check"
 
 step "lint (must leave no diff)"
-./scripts/hooks/lint.sh || fail "lint.sh"
-git diff --exit-code --stat || fail "lint.sh rewrote the files above; review and commit them"
+# Every integration, as CI lints them: locally lint.sh only lints integrations with uncommitted changes.
+LINT_ALL_INTEGRATIONS=1 ./scripts/hooks/lint.sh || fail "lint.sh"
+[ -z "$(git status --porcelain)" ] || { git status --short; fail "lint.sh changed the files above; review and commit them"; }
 
 step "OpenAPI spec"
 (cd hindsight-dev && uv run generate-openapi >/dev/null) || fail "generate-openapi"
@@ -46,7 +47,10 @@ step "generated files (upstream's verify-generated-files, minus the Rust client)
 # above already means the clients are unchanged.
 ./scripts/generate-bank-template-schema.sh >/dev/null || fail "generate-bank-template-schema"
 ./scripts/generate-docs-skill.sh >/dev/null || fail "generate-docs-skill"
-git diff --exit-code --stat || fail "generated files are stale; commit the regenerated files above"
+[ -z "$(git status --porcelain)" ] || { git status --short; fail "generated files are stale or new; commit the files above"; }
+
+step "fork rebase tooling"
+bash scripts/fork/rebase-onto.test.sh >/dev/null || fail "scripts/fork/rebase-onto.test.sh"
 
 step "fork tests (added or changed since $base)"
 tests=()  # macOS ships bash 3.2: no mapfile
