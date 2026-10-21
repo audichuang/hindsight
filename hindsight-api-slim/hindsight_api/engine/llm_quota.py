@@ -746,7 +746,7 @@ class QuotaCache:
 
     def __init__(
         self,
-        clock: Callable[[], float] = time.time,
+        clock: Callable[[], float] = time.time,  # noqa: TID251 - fetched_at is a real-time timestamp
         *,
         ttl_seconds: float = 60.0,
         backoff_base_seconds: float = 60.0,
