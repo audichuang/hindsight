@@ -367,3 +367,62 @@ async def test_tool_round_without_usage_keeps_chars_per_four_estimate(monkeypatc
     assert result.input_tokens == len(_MESSAGES[0]["content"]) // 4
     assert result.output_tokens == len("plain answer text") // 4
     assert result.cached_tokens == 0
+
+
+@pytest.fixture
+def cost_on(monkeypatch):
+    from hindsight_api.config import clear_config_cache
+    from hindsight_api.engine.llm_cost import load_cost_settings
+
+    monkeypatch.setenv("HINDSIGHT_API_LLM_COST_ENABLED", "true")
+    clear_config_cache()
+    load_cost_settings.cache_clear()
+    yield
+    clear_config_cache()
+    load_cost_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_call_error_result_keeps_real_usage_in_stash(monkeypatch, cost_on):
+    """fork: attempt-usage — an is_error result's real counts reach the error row (upstream raises without them)."""
+
+    async def fake_query(prompt: str, options: _FakeOptions):
+        yield _FakeResultMessage(
+            subtype="success",
+            is_error=True,
+            result="API Error: 500 Internal server error",
+            usage=ANTHROPIC_USAGE,
+        )
+
+    _install_fake_sdk(monkeypatch, query_fn=fake_query)
+    _patch_observability(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="Internal server error"):
+        await _instantiate_provider().call(messages=_MESSAGES, max_retries=0, scope="test")
+
+    stashed = current_response_usage()
+    assert stashed is not None
+    assert (stashed.input_tokens, stashed.output_tokens, stashed.cached_tokens) == (3210, 50, 3000)
+
+
+@pytest.mark.asyncio
+async def test_call_error_result_without_real_usage_stashes_nothing(monkeypatch, cost_on):
+    async def fake_query(prompt: str, options: _FakeOptions):
+        yield _FakeResultMessage(subtype="success", is_error=True, result="API Error: 500", usage={"output_tokens": 5})
+
+    _install_fake_sdk(monkeypatch, query_fn=fake_query)
+    _patch_observability(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        await _instantiate_provider().call(messages=_MESSAGES, max_retries=0, scope="test")
+
+    assert current_response_usage() is None
+
+
+def test_both_error_raises_keep_the_usage_hook():
+    import inspect
+
+    from hindsight_api.engine.providers.claude_code_llm import ClaudeCodeLLM
+
+    for method in (ClaudeCodeLLM.call, ClaudeCodeLLM.call_with_tools):
+        assert "stash_claude_code_error_usage(message)  # fork: attempt-usage" in inspect.getsource(method)

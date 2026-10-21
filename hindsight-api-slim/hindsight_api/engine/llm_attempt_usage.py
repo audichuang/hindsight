@@ -156,6 +156,76 @@ def note_stashed_usage(usage: _Usage | None) -> None:
         logger.debug("attempt-usage stash not noted: %s", type(exc).__name__)
 
 
+# --- usage of a failed response (hooked into the Codex SSE parsers and Claude Code's error result) --
+
+
+def stash_codex_failure_usage(event_type: str | None, data: Any) -> None:
+    """Stash the usage a Codex ``response.failed`` event carries, before the parser raises on it.
+
+    The backend can charge a failed response; upstream reads usage from ``response.completed``
+    only (#5693), so without this the failed attempt counts nothing (or a delta estimate). Noted
+    for the cost hook like a completed event, so its cache writes are read too. A no-op with the
+    feature off.
+    """
+    if event_type != "response.failed" or not isinstance(data, dict):
+        return
+    try:
+        if not _cost_enabled():
+            return
+        from .llm_cost import alias_codex_usage_note
+        from .llm_trace import LLMResponseUsage, stash_response_usage
+        from .providers.codex_llm import _usage_from_completed_event
+
+        # The usage block has the completed event's shape; only the event name differs.
+        usage = _usage_from_completed_event("response.completed", data)
+        if usage is None:
+            return
+        stash_response_usage(
+            alias_codex_usage_note(
+                usage,
+                LLMResponseUsage(
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    cached_tokens=usage.cached_tokens,
+                    thoughts_tokens=usage.thoughts_tokens,
+                ),
+            )
+        )
+    except Exception as exc:
+        logger.debug("attempt-usage Codex failure usage not stashed: %s", type(exc).__name__)
+
+
+def stash_claude_code_error_usage(message: object) -> None:
+    """Stash the real usage of a Claude Code ``is_error`` result (a quota error, say) for its error row.
+
+    Upstream raises without stashing it (#5693), so the error row records no tokens. Only a usage
+    dict with a real ``input_tokens`` count is stashed; the chars/4 estimate stays out. A no-op with
+    the feature off, and for a message without a ``usage`` field (test stand-ins).
+    """
+    sdk_usage = getattr(message, "usage", None)
+    if not isinstance(sdk_usage, dict):
+        return
+    input_tokens = sdk_usage.get("input_tokens")
+    if not isinstance(input_tokens, int) or isinstance(input_tokens, bool):
+        return
+    try:
+        if not _cost_enabled():
+            return
+        from .llm_trace import LLMResponseUsage, stash_response_usage
+        from .providers.claude_code_llm import _sdk_token_usage
+
+        usage = _sdk_token_usage(sdk_usage, [], "")
+        stash_response_usage(
+            LLMResponseUsage(
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cached_tokens=usage.cached_tokens,
+            )
+        )
+    except Exception as exc:
+        logger.debug("attempt-usage Claude Code error usage not stashed: %s", type(exc).__name__)
+
+
 # --- the trace row (decorates LLMTraceRecorder.record_llm_call) ----------------------------------
 
 

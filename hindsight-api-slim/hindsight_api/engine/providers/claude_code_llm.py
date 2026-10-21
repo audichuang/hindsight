@@ -466,6 +466,11 @@ class ClaudeCodeLLM(LLMInterface):
                                 # Surface the CLI's actual error text (e.g. quota
                                 # exhaustion) instead of the SDK's subtype-based
                                 # fallback exception (issue #2702).
+                                from hindsight_api.engine.llm_attempt_usage import (  # fork: attempt-usage
+                                    stash_claude_code_error_usage,
+                                )
+
+                                stash_claude_code_error_usage(message)  # fork: attempt-usage
                                 raise _result_error(message)
                             # The run's total usage, as the CLI billed it.
                             sdk_usage = message.usage
@@ -830,6 +835,11 @@ class ClaudeCodeLLM(LLMInterface):
                                 # above and break before reaching this branch. Only a genuine
                                 # error with nothing to return should surface (issue #2702).
                                 if not tool_calls:
+                                    from hindsight_api.engine.llm_attempt_usage import (  # fork: attempt-usage
+                                        stash_claude_code_error_usage,
+                                    )
+
+                                    stash_claude_code_error_usage(message)  # fork: attempt-usage
                                     raise _result_error(message)
                             elif isinstance(message, ResultMessage):
                                 sdk_usage = message.usage or sdk_usage

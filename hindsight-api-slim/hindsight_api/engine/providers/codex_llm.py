@@ -1037,6 +1037,8 @@ class CodexLLM(LLMInterface):
         Returns:
             The text content and token usage the stream carried.
         """
+        from hindsight_api.engine.llm_attempt_usage import stash_codex_failure_usage  # fork: attempt-usage
+
         full_text = ""
         usage: TokenUsage | None = None
         event_type = None
@@ -1057,6 +1059,7 @@ class CodexLLM(LLMInterface):
 
                 try:
                     data = json.loads(data_str)
+                    stash_codex_failure_usage(event_type, data)  # fork: attempt-usage
                     _raise_on_sse_failure(event_type, data)
                     usage = _usage_from_completed_event(event_type, data) or usage
 
@@ -1300,6 +1303,8 @@ class CodexLLM(LLMInterface):
         Returns:
             The text content, tool calls and token usage the stream carried.
         """
+        from hindsight_api.engine.llm_attempt_usage import stash_codex_failure_usage  # fork: attempt-usage
+
         content = ""
         tool_calls: list[LLMToolCall] = []
         usage: TokenUsage | None = None
@@ -1319,6 +1324,7 @@ class CodexLLM(LLMInterface):
 
                 try:
                     data = json.loads(data_str)
+                    stash_codex_failure_usage(event_type, data)  # fork: attempt-usage
                     _raise_on_sse_failure(event_type, data)
                     usage = _usage_from_completed_event(event_type, data) or usage
 

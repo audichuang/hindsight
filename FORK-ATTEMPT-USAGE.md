@@ -14,7 +14,7 @@ Each attempt counts as follows:
 
 | attempt | counted as | source |
 |---|---|---|
-| stashed provider usage (`response.completed`, `response.failed`) | that usage (the attempt's last stash) | provider |
+| stashed provider usage (`response.completed`, or `response.failed` through A8) | that usage (the attempt's last stash) | provider |
 | stashed Codex chars/4 fallback (stream ended without usage) | that estimate | estimate |
 | no stash, at least one delta event received (runaway, deadline, dropped connection) | input: the provider-counted input of another attempt of the call (every attempt sends the same messages), else the call's messages at chars/4; cached: 0; output: one token per delta event | estimate |
 | no stash, no delta event (failed before the backend streamed) | nothing | — |
@@ -52,6 +52,8 @@ Each line is marked `# fork: attempt-usage`.
 | A5 | same file, `LLMTraceRecorder.record_llm_call` | the decorator `@fold_attempt_usage`. Every caller passes keywords (the tracing fan-out does); a positional call is passed through unfolded |
 | A6 | `hindsight-api-slim/hindsight_api/engine/providers/codex_llm.py`, `_iter_sse_lines` | a local import of `begin_codex_attempt`, `attempt = begin_codex_attempt()` before the decoder, and `attempt.feed(text)` right after `seen_chars += len(text)` |
 | A7 | same file, `call()` | a local import of `alias_codex_usage_note`, and the `LLMResponseUsage` copy that upstream stashes wrapped in `alias_codex_usage_note(token_usage, ...)`, so the cost note taken on the parsed usage also belongs to the stashed copy |
+| A8 | same file, `_parse_sse_stream` and `_parse_sse_tool_stream` | a local import of `stash_codex_failure_usage` at the top of each, and `stash_codex_failure_usage(event_type, data)` right before `_raise_on_sse_failure(event_type, data)`: a `response.failed` event's usage is stashed (and noted for the cost hook) before the parser raises. Upstream reads usage from `response.completed` only (#5693). With the cost flag off it does nothing |
+| A9 | `hindsight-api-slim/hindsight_api/engine/providers/claude_code_llm.py`, `call()` and `call_with_tools()` | a local import of `stash_claude_code_error_usage` and `stash_claude_code_error_usage(message)` before each `raise _result_error(message)`: an `is_error` result's real usage (with a real `input_tokens`) reaches the error row. Upstream raises without stashing it. With the cost flag off it does nothing |
 
 Fork-owned files: `hindsight-api-slim/hindsight_api/engine/llm_attempt_usage.py`, `hindsight-api-slim/hindsight_api/engine/sse_delta_scan.py` (shared with `FORK-CODEX-OUTPUT-CAP.md`), `hindsight-api-slim/tests/test_fork_attempt_usage.py` (behaviour and hook-existence tests), and this file.
 
@@ -83,4 +85,5 @@ Upstream #5693 (`dcc3ee421`, "report real token usage for Codex, Claude Code and
 - `call()` stashes once per attempt, after the stream is parsed, a new `LLMResponseUsage` copied from `token_usage` (`reply.usage`, or the chars/4 fallback when `reply.usage` is None). A runaway still raises before the stash, so the ledger's delta estimate still applies.
 - The stashed object is not the one the cost note (H16, in `_usage_from_completed_event`) was taken on, so the identity check in `note_stashed_usage` (through `codex_usage_kwargs`) would read every stash as an estimate. A7 aliases the note onto the copy: `alias_codex_usage_note` adds the copy to the note's owners when `token_usage` was noted, and leaves a copy of the chars/4 fallback unnoted.
 - `call_with_tools` no longer stashes. Its success row is still counted correctly (the success row is authoritative for its own attempt), but an earlier parse-failed attempt in that path has nothing to count. It has no parse retry today, so nothing is lost.
-- `test_fork_attempt_usage.py::test_parse_failure_retry_adds_both_provider_usages` fails if the alias is missing, `test_codex_call_keeps_the_stash_alias_hook` if A7 is lost, and `test_codex_keeps_the_attempt_meter_hooks` if A6 is lost.
+- A `response.incomplete` reply (a truncated answer, which upstream returns as a success) still has no usage stash of its own: `call()` stashes the chars/4 fallback for it and the row is marked `estimate`.
+- `test_fork_attempt_usage.py::test_parse_failure_retry_adds_both_provider_usages` fails if the alias is missing, `test_a_failed_attempt_counts_the_usage_its_failure_event_reports` and `test_codex_parsers_keep_the_failure_usage_hook` if A8 is lost, `test_both_error_raises_keep_the_usage_hook` (in `test_fork_claude_code_usage.py`) if A9 is lost, `test_codex_call_keeps_the_stash_alias_hook` if A7 is lost, and `test_codex_keeps_the_attempt_meter_hooks` if A6 is lost.

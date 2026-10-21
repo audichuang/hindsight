@@ -288,3 +288,50 @@ def test_codex_call_keeps_the_stash_alias_hook():
     body = inspect.getsource(CodexLLM.call)
     assert "from hindsight_api.engine.llm_cost import alias_codex_usage_note  # fork: attempt-usage" in body
     assert "stash_response_usage(\n                    alias_codex_usage_note(  # fork: attempt-usage" in body
+
+
+def _failed(usage: dict | None) -> str:
+    response: dict = {"status": "failed", "error": {"code": "server_error", "message": "boom"}}
+    if usage is not None:
+        response["usage"] = usage
+    return _sse(("response.failed", {"type": "response.failed", "response": response}))
+
+
+async def test_a_failed_attempt_counts_the_usage_its_failure_event_reports(cost_on, recorder):
+    llm = _wrapper([_failed(_usage(50000, 700, cached=40000, writes=100)), _completed("answer", _usage(1000, 50))])
+    await _call(llm)
+    [row] = recorder.records
+    assert (row.input_tokens, row.output_tokens, row.cached_tokens) == (51000, 750, 40000)
+    assert _usage_marker(row)["usage_source"] == "provider"
+    assert _usage_marker(row)["cache_write_tokens"] == 100
+
+
+async def test_an_error_row_keeps_the_usage_of_its_failure_event(cost_on, recorder):
+    llm = _wrapper([_failed(_usage(50000, 700, cached=40000))])
+    with pytest.raises(codex_llm.CodexStreamError, match="server_error"):
+        await _call(llm, max_retries=0)
+    [row] = recorder.records
+    assert row.status == "error"
+    assert (row.input_tokens, row.output_tokens, row.cached_tokens) == (50000, 700, 40000)
+
+
+def test_failure_usage_is_not_stashed_with_the_feature_off():
+    from hindsight_api.engine.llm_attempt_usage import stash_codex_failure_usage
+    from hindsight_api.engine.llm_trace import current_response_usage
+
+    event = {"type": "response.failed", "response": {"status": "failed", "usage": _usage(50000, 700)}}
+    stash_codex_failure_usage("response.failed", event)
+    assert current_response_usage() is None
+
+
+def test_codex_parsers_keep_the_failure_usage_hook():
+    for parser in (CodexLLM._parse_sse_stream, CodexLLM._parse_sse_tool_stream):
+        body = inspect.getsource(parser)
+        assert (
+            "from hindsight_api.engine.llm_attempt_usage import stash_codex_failure_usage  # fork: attempt-usage"
+            in body
+        )
+        assert (
+            "stash_codex_failure_usage(event_type, data)  # fork: attempt-usage\n"
+            "                    _raise_on_sse_failure(event_type, data)" in body
+        )
