@@ -1,6 +1,6 @@
 """Missing-total cache writes through the pricing path (fork: cost-accounting, audit follow-up).
 
-The provider fold tests are upstream-bound (test_fork_anthropic_fold.py, test_fork_claude_code_usage.py).
+The provider fold tests are upstream-bound (test_fork_anthropic_fold.py, test_fork_claude_code_usage.py, the nested-writes test below).
 This file covers what those cannot: the folded input and the write count the cost hook records must price
 together, with a non-negative uncached remainder.
 """
@@ -20,7 +20,7 @@ from hindsight_api.engine.llm_cost import (
     read_stored_usage,
     summarize_costs,
 )
-from hindsight_api.engine.providers.claude_code_llm import _usage_from_sdk_usage
+from hindsight_api.engine.providers.claude_code_llm import _sdk_token_usage
 
 
 @pytest.fixture(autouse=True)
@@ -40,8 +40,7 @@ def test_missing_total_fold_prices_without_negative_uncached_input():
         "cache_read_input_tokens": 0,
         "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 1000},
     }
-    folded = _usage_from_sdk_usage(raw)
-    assert folded is not None
+    folded = _sdk_token_usage(raw, [], "")
     call = claude_code_usage_kwargs(raw)[FORK_USAGE_KWARG]
     row = RowUsage(
         provider="anthropic",
@@ -69,3 +68,24 @@ def test_missing_total_fold_prices_without_negative_uncached_input():
     assert model.cache_write_tokens == 1000
     assert model.input_tokens == 1100  # the folded total: 100 uncached + 1000 written
     assert summary.cost_usd > 0
+
+
+def test_claude_code_fold_takes_nested_writes_when_the_total_is_missing():
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_read_input_tokens": 3000,
+        "cache_creation": {"ephemeral_5m_input_tokens": 150, "ephemeral_1h_input_tokens": 50},
+    }
+    folded = _sdk_token_usage(usage, [], "")
+    assert (folded.input_tokens, folded.cached_tokens) == (3210, 3000)  # 10 + 200 written + 3000 read
+
+
+def test_claude_code_fold_keeps_a_reported_total_larger_than_the_breakdown():
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_creation_input_tokens": 500,
+        "cache_creation": {"ephemeral_5m_input_tokens": 100, "ephemeral_1h_input_tokens": 0},
+    }
+    assert _sdk_token_usage(usage, [], "").input_tokens == 510

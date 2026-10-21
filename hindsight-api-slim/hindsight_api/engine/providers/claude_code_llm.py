@@ -15,10 +15,10 @@ import tempfile
 import time
 from contextlib import AbstractAsyncContextManager, nullcontext
 from datetime import UTC, datetime, timedelta
-from typing import Any, Callable
+from typing import Annotated, Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, BeforeValidator, ValidationError
 
 from hindsight_api.engine.llm_interface import (
     LLM_TOOL_CHOICE_AUTO,
@@ -41,6 +41,13 @@ from ..response_models import LLMCallResult
 logger = logging.getLogger(__name__)
 
 
+class _SdkCacheCreation(BaseModel):
+    """The TTL breakdown of the cache writes."""
+
+    ephemeral_5m_input_tokens: int | None = None
+    ephemeral_1h_input_tokens: int | None = None
+
+
 class _SdkUsage(BaseModel):
     """The Anthropic-shaped usage block the CLI reports on its messages."""
 
@@ -48,6 +55,19 @@ class _SdkUsage(BaseModel):
     output_tokens: int | None = None
     cache_read_input_tokens: int | None = None
     cache_creation_input_tokens: int | None = None
+    # A malformed breakdown reads as absent rather than failing a run the CLI already billed.
+    cache_creation: Annotated[
+        _SdkCacheCreation | None, BeforeValidator(lambda v: v if isinstance(v, dict) else None)
+    ] = None
+
+    def cache_write_tokens(self) -> int:
+        """The reported total, or the TTL breakdown when that is larger: a missing total must not
+        leave the nested writes out of the folded input (they are priced as writes)."""
+        creation = self.cache_creation
+        ttl_writes = (
+            ((creation.ephemeral_5m_input_tokens or 0) + (creation.ephemeral_1h_input_tokens or 0)) if creation else 0
+        )
+        return max(self.cache_creation_input_tokens or 0, ttl_writes)
 
 
 def _sdk_token_usage(usage: dict[str, Any] | None, messages: list[dict[str, Any]], text: str) -> TokenUsage:
@@ -67,7 +87,7 @@ def _sdk_token_usage(usage: dict[str, Any] | None, messages: list[dict[str, Any]
         )
     parsed = _SdkUsage.model_validate(usage)
     cache_read = parsed.cache_read_input_tokens or 0
-    input_tokens = (parsed.input_tokens or 0) + cache_read + (parsed.cache_creation_input_tokens or 0)
+    input_tokens = (parsed.input_tokens or 0) + cache_read + parsed.cache_write_tokens()
     output_tokens = parsed.output_tokens or 0
     return TokenUsage(
         input_tokens=input_tokens,
