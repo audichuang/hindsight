@@ -162,6 +162,12 @@ jobs:
         uv run generate-openapi
         git diff --exit-code -- ../hindsight-docs/static/openapi.json
 
+    - name: Generated docs skill and bank-template schema are up to date
+      run: |
+        ./scripts/generate-bank-template-schema.sh
+        ./scripts/generate-docs-skill.sh
+        git diff --exit-code
+
   control-plane:
     runs-on: ubuntu-latest
     timeout-minutes: 30

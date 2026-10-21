@@ -1,6 +1,6 @@
 #!/bin/bash
 # Local gate before pushing a fork branch: what Fork CI's typecheck-and-lint job checks (ty, lint with
-# no diff left, OpenAPI spec up to date), plus the fork's own api-slim tests. Fork CI runs the full suite,
+# no diff left, OpenAPI spec and generated docs up to date), plus the fork's own api-slim tests. Fork CI runs the full suite,
 # the system tests and the control plane; this catches the mistakes that would otherwise cost a CI round.
 #
 # Usage: scripts/fork/check.sh [<upstream-tag>]
@@ -40,6 +40,13 @@ step "OpenAPI spec"
 (cd hindsight-dev && uv run generate-openapi >/dev/null) || fail "generate-openapi"
 git diff --exit-code --stat -- hindsight-docs/static/openapi.json \
   || fail "openapi.json is stale; commit the regenerated spec"
+
+step "generated files (upstream's verify-generated-files, minus the Rust client)"
+# generate-clients needs Rust; the fork's routes stay out of OpenAPI, so an unchanged openapi.json
+# above already means the clients are unchanged.
+./scripts/generate-bank-template-schema.sh >/dev/null || fail "generate-bank-template-schema"
+./scripts/generate-docs-skill.sh >/dev/null || fail "generate-docs-skill"
+git diff --exit-code --stat || fail "generated files are stale; commit the regenerated files above"
 
 step "fork tests (added or changed since $base)"
 tests=()  # macOS ships bash 3.2: no mapfile
