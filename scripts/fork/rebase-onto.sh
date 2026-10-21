@@ -9,18 +9,22 @@
 #   scripts/fork/rebase-onto.sh drop "<reason>"                the stopped commit is already in upstream: discard it, pick on
 #   scripts/fork/rebase-onto.sh status                         queue position and the ledger so far
 #
+# `start` copies this script into the state directory and prints that path: the upstream tag it checks out
+# has no scripts/fork/, so use the copy for continue / drop / status until the run ends.
+#
 # Every queued commit ends in the ledger as picked, empty (applied but changed nothing: upstream has it) or
 # dropped with a reason; the run ends with a check that none is missing. Amend a picked commit's message to
 # say what the resolution changed before you `continue`, so the history does not claim the old fix.
 set -euo pipefail
-state="$(git rev-parse --git-dir)/fork-rebase"
+state="$(cd "$(git rev-parse --git-dir)" && pwd)/fork-rebase"
+self="$state/rebase-onto.sh"
 queue="$state/queue" ledger="$state/ledger" pos="$state/pos"
 
 die() { echo "rebase-onto: $*" >&2; exit 2; }
 stopped() { # $1 = the commit that stopped; leaves the conflict for the user
   echo "STOPPED at $1 $(git log -1 --format=%s "$1")"
   git diff --name-only --diff-filter=U | sed 's/^/  conflict: /'
-  echo "Resolve and \`git add\`, then: scripts/fork/rebase-onto.sh continue   (or: ... drop \"<why upstream has it>\")"
+  echo "Resolve and \`git add\`, then: bash $self continue   (or: bash $self drop \"<why upstream has it>\")"
   exit 1
 }
 
@@ -65,6 +69,7 @@ case "$cmd" in
     [ -z "$(git status --porcelain)" ] || die "tree is dirty"
     old=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-patch*' "$from")
     mkdir -p "$state"
+    cp "$0" "$self"
     git log --reverse --no-merges --format=%H "$old..$from" > "$queue"
     : > "$ledger"; echo 0 > "$pos"
     printf 'from=%s old=%s new=%s commits=%s\n' "$from" "$old" "$new" "$(wc -l < "$queue" | tr -d ' ')" | tee "$state/info"
