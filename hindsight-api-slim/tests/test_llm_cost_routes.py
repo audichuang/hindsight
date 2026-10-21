@@ -70,6 +70,7 @@ async def _insert(
     operation: str = "retain",
     usage: dict | None = None,
     status: str = "success",
+    scope: str | None = None,
 ) -> str:
     row_id = uuid4()
     llm_info = {"usage": usage} if usage is not None else {}
@@ -78,8 +79,8 @@ async def _insert(
         await conn.execute(
             f"INSERT INTO {fq_table('llm_requests')} "
             "(id, bank_id, operation, status, provider, model, started_at, input_tokens, output_tokens, "
-            "cached_tokens, thoughts_tokens, llm_info) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)",
+            "cached_tokens, thoughts_tokens, llm_info, scope) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13)",
             row_id,
             bank_id,
             operation,
@@ -92,6 +93,7 @@ async def _insert(
             cached_tokens,
             thoughts_tokens,
             json.dumps(llm_info),
+            scope,
         )
     return str(row_id)
 
@@ -199,6 +201,57 @@ async def test_summary_matches_summarize_costs(cost_client, memory, bank_id):
     assert body["plan_list_price_usd"] == pytest.approx(expected.plan_list_price_usd)
     assert body["unpriced_calls"] == expected.unpriced_calls == 1
     assert body["truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_summary_reads_llm_calls_only(cost_client, memory, bank_id):
+    """Embedding, rerank and decision-model rows share llm_requests since upstream #5835; they are not priced."""
+    _, client = cost_client
+    await _create_bank(client, bank_id)
+    await _seed(memory, bank_id)
+    now = datetime.now(UTC)
+    for scope, provider, model in (
+        ("embedding_document", "openai", "qwen/qwen3-embedding-4b"),
+        ("rerank", "cohere", "rerank-v4.0-fast"),
+        ("decision_consolidation_triage", "typesafe", "jev"),
+    ):
+        await _insert(
+            memory,
+            bank_id,
+            provider=provider,
+            model=model,
+            started_at=now,
+            input_tokens=500,
+            output_tokens=0,
+            scope=scope,
+        )
+
+    response = await client.get(COST_PATH.format(bank_id=bank_id), params={"period": "1d"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["unpriced_calls"] == 1  # the seed's own unmapped LLM row, nothing else
+    assert {m["model"] for m in body["models"]} == {"claude-haiku-5-5", "gpt-6.1-sol", "some-model"}
+
+
+@pytest.mark.asyncio
+async def test_rows_endpoint_gives_no_cost_line_to_an_embedding_row(cost_client, memory, bank_id):
+    _, client = cost_client
+    await _create_bank(client, bank_id)
+    ids = await _seed(memory, bank_id)
+    embedding = await _insert(
+        memory,
+        bank_id,
+        provider="openai",
+        model="text-embedding-3-small",
+        started_at=datetime.now(UTC),
+        input_tokens=500,
+        output_tokens=0,
+        scope="embedding_query",
+    )
+
+    response = await client.get(ROWS_PATH.format(bank_id=bank_id), params={"ids": f"{ids['haiku']},{embedding}"})
+    assert response.status_code == 200
+    assert set(response.json()["items"]) == {ids["haiku"]}
 
 
 @pytest.mark.asyncio

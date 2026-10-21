@@ -23,6 +23,7 @@ from hindsight_api.engine.llm_cost import (
     read_stored_usage,
     summarize_costs,
 )
+from hindsight_api.engine.llm_trace import call_type_clause
 from hindsight_api.engine.schema import _is_oracle, fq_table
 
 if TYPE_CHECKING:
@@ -146,7 +147,9 @@ class LLMCostStore:
                 tz=query.tz,
                 tz_name=query.tz_name,
             )
-        where = ["bank_id = $1", "started_at >= $2"]
+        # LLM calls only: the embedding, rerank and decision-model rows upstream records in the
+        # same table since #5835 carry no price, and would count as unpriced calls toward ROW_CAP.
+        where = ["bank_id = $1", "started_at >= $2", call_type_clause("llm")]
         params: list[Any] = [bank_id, window.start]
         if window.end is not None:
             params.append(window.end)
@@ -176,7 +179,10 @@ class LLMCostStore:
         await check_bank_readable(self._memory, bank_id, request_context, _READ_ACTION)
         if _is_oracle():
             return LLMRowCostResponse(bank_id=bank_id, items={})
-        stored = await self._fetch("bank_id = $1 AND id = ANY($2::uuid[])", [bank_id, list(ids)], limit=None)
+        # LLM rows only, as in the summary: an embedding or rerank row gets no cost line.
+        stored = await self._fetch(
+            f"bank_id = $1 AND id = ANY($2::uuid[]) AND {call_type_clause('llm')}", [bank_id, list(ids)], limit=None
+        )
         return LLMRowCostResponse(
             bank_id=bank_id,
             items={item.row_id: price_row(item.usage, self._settings) for item in stored},
