@@ -35,16 +35,19 @@ else
   : > "$out/upstream-touching.diff"
 fi
 
-# Test names in a file: Python test functions and methods, and the titles of it()/test() cases (TS/JS).
+# Test names in a file: Python test functions and methods, and the titles of it()/test() cases (TS/JS),
+# including parameterised it.each([...])("title", ...).
 test_names() {
   sed -nE -e 's/^[[:space:]]*(async )?def (test_[A-Za-z0-9_]+).*/\2/p' \
+    -e "s/^[[:space:]]*(it|test)\.each\(.*\)\([[:space:]]*['\"\`]([^'\"\`]+).*/each: \2/p" \
     -e "s/^[[:space:]]*(it|test)(\.[a-z]+)?\([[:space:]]*['\"\`]([^'\"\`]+).*/\3/p" | sort -u
 }
 
 # A test the rebase deleted or relaxed may have guarded fork behaviour that upstream's replacement lacks.
 {
   echo "# fork test files (added or changed by the fork on $old) and what the rebase did to them"
-  git diff --name-only --diff-filter=AM "$old" "$oldhead" -- '*/tests/*' '*/tests/**' | sort -u | while read -r f; do
+  git diff --name-only --diff-filter=AM "$old" "$oldhead" \
+    -- '*/tests/*' '*.test.*' '*.spec.*' '*/test_*.py' | sort -u | while read -r f; do
     if ! git cat-file -e "$head:$f" 2>/dev/null; then
       echo "DELETED  $f"
     elif [ "$(git rev-parse "$oldhead:$f")" = "$(git rev-parse "$head:$f")" ]; then

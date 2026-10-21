@@ -65,6 +65,7 @@ verify() {
     echo "  $how $c $(git log -1 --format=%s "$c") ${rest:+- $rest}"
   done
   [ "$missing" -eq 0 ] || die "ledger is incomplete"
+  git merge-base --is-ancestor "$(cat "$state/base")" HEAD || die "HEAD is not on the new tag $(cat "$state/base")"
   rm -rf "$state.last" && mv "$state" "$state.last"
   echo "done: every queued commit is accounted for. HEAD=$(git rev-parse --short HEAD); ledger: $state.last/ledger"
 }
@@ -76,12 +77,13 @@ case "$cmd" in
     [ -e "$state" ] && die "a run is in progress ($state); finish it or remove the directory"
     [ -z "$(git status --porcelain)" ] || die "tree is dirty"
     old=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-patch*' "$from")
-    mkdir -p "$state"
+    base=$(git rev-parse --verify "$new^{commit}")
+    mkdir -p "$state"; echo "$base" > "$state/base"
     cp "$0" "$self"
     git log --reverse --no-merges --format=%H "$old..$from" > "$queue"
     : > "$ledger"; echo 0 > "$pos"
     printf 'from=%s old=%s new=%s commits=%s\n' "$from" "$old" "$new" "$(wc -l < "$queue" | tr -d ' ')" | tee "$state/info"
-    git checkout -q --detach "$new"
+    git checkout -q --detach "$new" || { rm -rf "$state"; die "could not check out $new; nothing was started"; }
     pick_rest
     ;;
   continue)

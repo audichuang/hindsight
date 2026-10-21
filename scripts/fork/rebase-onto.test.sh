@@ -1,6 +1,6 @@
 #!/bin/bash
 # Tests for rebase-onto.sh in throwaway repos: a clean run, a conflict resolved and continued, a commit made by
-# hand during a stop, a drop, and a pick refused by local changes (which must stop, never count as empty).
+# hand during a stop, a drop, a pick refused by local changes (which must stop, never count as empty), and a refused checkout.
 # Usage: bash scripts/fork/rebase-onto.test.sh
 set -euo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/rebase-onto.sh"
@@ -72,5 +72,15 @@ if [ "$status" -ne 0 ] && ! grep -q "empty" "$(git rev-parse --absolute-git-dir)
    && grep -q 'did not start' "$tmp/out5"; then
   ok "refused pick stops instead of counting as empty"
 else bad "refused pick (status $status)"; cat "$tmp/out5"; fi
+
+# 6. Checkout of the new tag refused (a lock): start must leave no run behind to "continue" on the old base.
+make_repo locked noconflict
+git checkout -q fork-ref
+touch "$(git rev-parse --absolute-git-dir)/index.lock"
+status=0; bash "$script" start v2.0.0 fork-ref >"$tmp/out6" 2>&1 || status=$?
+rm -f "$(git rev-parse --absolute-git-dir)/index.lock"
+if [ "$status" -ne 0 ] && [ ! -e "$(git rev-parse --absolute-git-dir)/fork-rebase" ]; then
+  ok "refused checkout leaves no run in progress"
+else bad "refused checkout (status $status)"; cat "$tmp/out6"; fi
 
 [ "$failures" -eq 0 ] && echo "all passed" || { echo "$failures failed"; exit 1; }
