@@ -245,10 +245,10 @@ Upstream hooks. Each one is marked `fork: cost-accounting`:
 | H11 | same file, `SpanDetails` | `{/* fork: cost-accounting */ <LLMCallCost entry={entry} />}` on one line, after the tokens block |
 | H12 | `hindsight-control-plane/src/app/api/version/route.ts` | import of `llmCostPanelEnabled`, and `features.llm_cost = llmCostPanelEnabled(process.env.HINDSIGHT_CP_LLM_COST_ENABLED)` after the `access_key_auth` line |
 | H13 | `hindsight-control-plane/src/lib/features-context.tsx` | `llm_cost: boolean` in the `Features` interface and `llm_cost: false` in `defaultFeatures` |
-| H14 | `hindsight-api-slim/hindsight_api/engine/providers/claude_code_llm.py`, `call()` | a local import of `claude_code_usage_kwargs` just before the span recorder call inside the span `try`; `**claude_code_usage_kwargs(raw_usage),  # fork: cost-accounting` as the last kwarg of that `record_llm_call`; the `raw_usage = None` reset on the estimate path (each line marked) |
-| H15 | same file, `call_with_tools()` | the same lines in its `get_span_recorder().record_llm_call(...)` and the same marked state line as H14 |
-| H16 | `hindsight-api-slim/hindsight_api/engine/providers/codex_llm.py`, `_usage_from_codex_completed` | between `result = LLMResponseUsage(...)` and `return result`: a local import of `note_codex_usage` and `note_codex_usage(result, data)` (the raw event; the cost module reads the cache-write count from it) |
-| H17 | same file, `call()` span | a local import of `codex_usage_kwargs` and `**codex_usage_kwargs(usage),  # fork: cost-accounting` in `span_recorder.record_llm_call(...)` |
+| H14 | `hindsight-api-slim/hindsight_api/engine/providers/claude_code_llm.py`, `call()` | a local import of `claude_code_usage_kwargs` just before the span recorder call inside the span `try`, and `**claude_code_usage_kwargs(sdk_usage),  # fork: cost-accounting` as the last kwarg of that `record_llm_call`. `sdk_usage` is upstream's (#5693): the SDK usage dict, None when the run reported none, which the hook records as an estimate |
+| H15 | same file, `call_with_tools()` | the same two lines in its `get_span_recorder().record_llm_call(...)` |
+| H16 | `hindsight-api-slim/hindsight_api/engine/providers/codex_llm.py`, `_usage_from_completed_event` | upstream's `return TokenUsage(...)` becomes `result = TokenUsage(...)` (marked), then a local import of `note_codex_usage`, `note_codex_usage(result, data)` (the raw event; the cost module reads the cache-write count from it) and `return result`. `call()` stashes a copy of it, which `FORK-ATTEMPT-USAGE.md` A7 aliases to this note |
+| H17 | same file, `call()` span | a local import of `codex_usage_kwargs` and `**codex_usage_kwargs(token_usage),  # fork: cost-accounting` in `span_recorder.record_llm_call(...)` |
 | H18 | same file, `call_with_tools()` span | the same two lines |
 | H19 | `hindsight-api-slim/hindsight_api/engine/providers/openai_compatible_llm.py`, `call()` success span | a local import of `openai_compatible_usage_kwargs` and `**openai_compatible_usage_kwargs(self.provider, self.base_url, response),  # fork: cost-accounting` in the `span_recorder.record_llm_call(...)` after `visible_token_usage` |
 | H20 | same file, `call_with_tools()` span | the same two lines |
@@ -269,8 +269,8 @@ Upstream behaviour this patch depends on, to re-diff after each rebase (private 
 - `llm_requests` columns and `llm_info` JSONB (`engine/llm_trace.py`, `LLMTraceRecorder.record_llm_call` and its `**_extra` parameter).
 - Provider usage shapes and the span-recorder call sites (the cost adapters depend on them):
   - `anthropic_llm.py`: `_usage_from_anthropic_response` and the `stash_response_usage` calls before parsing.
-  - `codex_llm.py`: `_usage_from_codex_completed` (its `result` and `data` variables), and the two codex span record sites. The raw `response.completed` usage shape is read by `llm_cost.py` (`_CodexCostEvent`).
-  - `claude_code_llm.py`: the message loops (`AssistantMessage.usage`, `ResultMessage.usage`, the `break` on the first tool call) and the `claude-agent-sdk` message types.
+  - `codex_llm.py`: `_usage_from_completed_event` (its `data` argument and the `TokenUsage` it returns), `call()`'s `token_usage` and `call_with_tools()`'s `usage` (both must be that same object when the stream reported usage), and the two codex span record sites. The raw `response.completed` usage shape is read by `llm_cost.py` (`_CodexCostEvent`).
+  - `claude_code_llm.py`: `sdk_usage` in both message loops (`ResultMessage.usage`, and in the tool path also `AssistantMessage.usage` before the `break` on the first tool call), `_sdk_token_usage`, and the `claude-agent-sdk` message types.
   - `openai_compatible_llm.py`: `visible_token_usage`, `_cached_prompt_tokens`, and the `prompt_tokens_details` and `usage` attribute reads.
   - `openai_responses_llm.py`: `_record_success` and its two call sites.
   - `xai_oauth_llm.py`: `_ChatUsage`, `_record_span`, and its two call sites.

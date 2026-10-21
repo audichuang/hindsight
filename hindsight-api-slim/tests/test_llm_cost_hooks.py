@@ -62,14 +62,16 @@ HOOK_LINES: dict[str, list[tuple[str, int]]] = {
     "llm_trace.py": [(H2_IMPORT, 1), (H2_UPDATE, 1)],
     "providers/claude_code_llm.py": [
         ("from hindsight_api.engine.llm_cost import claude_code_usage_kwargs  # fork: cost-accounting", 2),
-        ("**claude_code_usage_kwargs(raw_usage),  # fork: cost-accounting", 2),
-        ("raw_usage = None  # fork: cost-accounting (None marks the estimate for the cost hook)", 2),
+        # upstream's sdk_usage: the SDK usage dict, None when the run reported none (#5693)
+        ("**claude_code_usage_kwargs(sdk_usage),  # fork: cost-accounting", 2),
     ],
     "providers/codex_llm.py": [
+        ("result = TokenUsage(  # fork: cost-accounting (named so the cost hook can note it)", 1),
         ("from hindsight_api.engine.llm_cost import note_codex_usage  # fork: cost-accounting", 1),
         ("note_codex_usage(result, data)  # fork: cost-accounting", 1),
         ("from hindsight_api.engine.llm_cost import codex_usage_kwargs  # fork: cost-accounting", 2),
-        ("**codex_usage_kwargs(usage),  # fork: cost-accounting", 2),
+        ("**codex_usage_kwargs(token_usage),  # fork: cost-accounting", 1),
+        ("**codex_usage_kwargs(usage),  # fork: cost-accounting", 1),
     ],
     "providers/openai_compatible_llm.py": [
         ("from hindsight_api.engine.llm_cost import openai_compatible_usage_kwargs  # fork: cost-accounting", 2),
@@ -90,8 +92,8 @@ HOOK_LINES: dict[str, list[tuple[str, int]]] = {
 MARKER_LINE_TOTALS = {
     "llm_trace.py": 2,
     "memory_engine.py": 2,
-    "providers/claude_code_llm.py": 6,
-    "providers/codex_llm.py": 6,
+    "providers/claude_code_llm.py": 4,
+    "providers/codex_llm.py": 7,
     "providers/openai_compatible_llm.py": 4,
     "providers/openai_responses_llm.py": 5,
 }
@@ -474,8 +476,9 @@ _CODEX_CALL_KEYS = {
     "thoughts_tokens",
 }
 _CODEX_TOOLS_KEYS = _CODEX_CALL_KEYS | {"tool_calls"}
-_COMPAT_CALL_KEYS = _CODEX_CALL_KEYS
-_COMPAT_TOOLS_KEYS = _CODEX_CALL_KEYS | {"tool_calls"}
+# upstream passes served_by on the OpenAI-compatible spans
+_COMPAT_CALL_KEYS = _CODEX_CALL_KEYS | {"served_by"}
+_COMPAT_TOOLS_KEYS = _CODEX_CALL_KEYS | {"tool_calls", "served_by"}
 _RESPONSES_KEYS = _CODEX_CALL_KEYS | {"tool_calls"}
 
 _V2_ESTIMATE = {"v": 2, "usage_source": "estimate"}
