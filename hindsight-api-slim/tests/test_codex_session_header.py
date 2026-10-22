@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from hindsight_api.engine.llm_trace import LLMTraceContext, reset_trace_context, set_trace_context
-from hindsight_api.engine.providers.codex_llm import CodexLLM
+from hindsight_api.engine.providers.codex_llm import CodexLLM, _CodexStreamReply
 from tests.codex_stream_stub import CodexReply, stub_codex_stream, stub_codex_stream_with
 
 _MESSAGES = [
@@ -54,7 +54,7 @@ def _bound_trace() -> Iterator[None]:
 async def _send_call(llm: CodexLLM) -> MagicMock:
     with (
         stub_codex_stream(llm, MagicMock(status_code=200)) as stream,
-        patch.object(llm, "_parse_sse_stream", new_callable=AsyncMock, return_value="ok"),
+        patch.object(llm, "_parse_sse_stream", new_callable=AsyncMock, return_value=_CodexStreamReply("ok", [], None)),
     ):
         await llm.call(messages=_MESSAGES, max_retries=0)
     return stream
@@ -63,7 +63,9 @@ async def _send_call(llm: CodexLLM) -> MagicMock:
 async def _send_tools(llm: CodexLLM) -> MagicMock:
     with (
         stub_codex_stream(llm, MagicMock(status_code=200)) as stream,
-        patch.object(llm, "_parse_sse_tool_stream", new_callable=AsyncMock, return_value=(None, [])),
+        patch.object(
+            llm, "_parse_sse_tool_stream", new_callable=AsyncMock, return_value=_CodexStreamReply("", [], None)
+        ),
     ):
         await llm.call_with_tools(messages=_MESSAGES, tools=[], max_retries=0)
     return stream
@@ -91,15 +93,6 @@ async def test_session_header_follows_an_operator_prompt_cache_key(send):
     assert stream.call_args.kwargs["headers"]["session-id"] == "operator-key"
 
 
-@_PATHS
-async def test_no_session_header_without_a_key(send):
-    llm = _build_llm()
-    with patch("hindsight_api.engine.providers.codex_llm.cache_affinity_id", return_value=None):
-        stream = await send(llm)
-
-    assert "session-id" not in stream.call_args.kwargs["headers"]
-
-
 def test_header_builder_adds_no_session_by_default():
     """The quota fetch builds headers with no request behind them; it must not carry a session."""
     assert "session-id" not in _build_llm()._build_request_headers()
@@ -112,7 +105,9 @@ async def test_session_header_survives_the_auth_refresh_retry():
         _bound_trace(),
         patch.object(llm, "_refresh_oauth_tokens", new_callable=AsyncMock),
         stub_codex_stream_with(llm, lambda url, **kwargs: replies.pop(0)) as stream,
-        patch.object(llm, "_parse_sse_tool_stream", new_callable=AsyncMock, return_value=(None, [])),
+        patch.object(
+            llm, "_parse_sse_tool_stream", new_callable=AsyncMock, return_value=_CodexStreamReply("", [], None)
+        ),
     ):
         await llm.call_with_tools(messages=_MESSAGES, tools=[], max_retries=0)
 

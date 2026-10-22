@@ -129,6 +129,9 @@ def begin_codex_attempt() -> AttemptMeter:
     ledger = _ledger.get()
     if ledger is None:
         return AttemptMeter(None)
+    from .llm_cost import forget_codex_usage
+
+    forget_codex_usage()
     attempt = _Attempt()
     ledger.attempts.append(attempt)
     return AttemptMeter(attempt)
@@ -143,13 +146,13 @@ def note_stashed_usage(usage: _Usage | None) -> None:
     if ledger is None or not ledger.attempts or usage is None:
         return
     try:
-        from .llm_cost import FORK_USAGE_KWARG, codex_usage_kwargs
+        from .llm_cost import codex_stash_breakdown
 
         attempt = ledger.attempts[-1]
         attempt.usage = usage
         # Codex notes the breakdown of every usage object it parsed from the stream; anything
-        # else (its chars/4 fallback) comes back as an estimate. Read now, while it is the latest note.
-        breakdown = codex_usage_kwargs(usage).get(FORK_USAGE_KWARG)
+        # else (its chars/4 fallback) finds no note and is an estimate. Read now, while it is the latest note.
+        breakdown = codex_stash_breakdown(usage)
         attempt.estimated = breakdown is None or breakdown.usage_source != "provider"
         attempt.cache_write_tokens = breakdown.cache_write_tokens if breakdown is not None else None
     except Exception as exc:

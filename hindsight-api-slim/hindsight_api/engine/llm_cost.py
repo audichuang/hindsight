@@ -687,6 +687,31 @@ def codex_usage_kwargs(usage: object) -> dict[str, CallUsage]:
     return _guarded(build)
 
 
+def forget_codex_usage() -> None:
+    """A new Codex attempt starts: a note left by an earlier attempt must not describe what this one stashes."""
+    _codex_pending.set(None)
+
+
+_STASH_COUNTS = ("input_tokens", "output_tokens", "cached_tokens", "thoughts_tokens")
+
+
+def codex_stash_breakdown(stashed: object) -> CallUsage | None:
+    """The noted breakdown of the usage a Codex attempt stashed; None when the stash is not the noted usage.
+
+    Upstream's Codex ``call()`` stashes a new ``LLMResponseUsage`` copied from the ``TokenUsage`` its parser
+    returned (the object ``note_codex_usage`` saw), so identity cannot tie the two. The note is cleared when
+    each attempt starts (``forget_codex_usage``), so a note present at stash time came from this attempt's
+    stream, and equal counts tie it to the stash; a chars/4 fallback stash finds no note.
+    """
+    pending = _codex_pending.get()
+    if pending is None:
+        return None
+    noted, breakdown = pending
+    if noted is stashed or all(getattr(noted, f, None) == getattr(stashed, f, None) for f in _STASH_COUNTS):
+        return breakdown
+    return None
+
+
 def openai_compatible_usage_kwargs(provider: str, base_url: str | None, response: object) -> dict[str, CallUsage]:
     """Cache writes, provider-reported cost and the zai billing hint of an OpenAI-compatible completion."""
 
