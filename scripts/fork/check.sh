@@ -1,7 +1,8 @@
 #!/bin/bash
 # Local gate before pushing a fork branch: what Fork CI's typecheck-and-lint job checks (ty, lint with
-# no diff left, OpenAPI spec and generated docs up to date), plus the fork's own api-slim tests. Fork CI runs the full suite,
-# the system tests and the control plane; this catches the mistakes that would otherwise cost a CI round.
+# no diff left, OpenAPI spec and generated docs up to date), the fork's own api-slim tests, and Fork CI's
+# control-plane job when the control plane changed since <upstream-tag>. Fork CI runs the full suite and the
+# system tests; this catches the mistakes that would otherwise cost a CI round.
 #
 # Usage: scripts/fork/check.sh [<upstream-tag>]
 #   <upstream-tag>  base of the fork commits; its test files that the fork added or changed are run.
@@ -63,4 +64,18 @@ else
     || fail "fork tests"
 fi
 
-printf '\ncheck.sh: OK (%d fork test files). Full suite, system tests and control plane run in Fork CI.\n' "${#tests[@]}"
+step "control plane (Fork CI's control-plane job)"
+if git diff --quiet "$base" HEAD -- hindsight-control-plane hindsight-clients/typescript; then
+  echo "unchanged since $base"
+else
+  # The control plane imports the TypeScript SDK from its build output (gitignored dist/).
+  npm run build --workspace=hindsight-clients/typescript >/dev/null || fail "TypeScript SDK build"
+  # TZ=UTC as on the CI runner: upstream's relative-time tests assume a UTC day.
+  TZ=UTC npm test --workspace=hindsight-control-plane >/dev/null || fail "control-plane tests (npm test --workspace=hindsight-control-plane)"
+  npm run i18n:check --workspace=hindsight-control-plane >/dev/null || fail "i18n parity"
+  (cd hindsight-control-plane && npx --yes knip@5 --no-progress --include files,dependencies,unlisted) || fail "knip"
+  npm run build --workspace=hindsight-control-plane >/dev/null || fail "control-plane build"
+  [ -z "$(git status --porcelain)" ] || { git status --short; fail "the control-plane steps changed the files above"; }
+fi
+
+printf '\ncheck.sh: OK (%d fork test files). Full suite and system tests run in Fork CI.\n' "${#tests[@]}"
