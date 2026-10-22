@@ -3,9 +3,10 @@
 
 set -e
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-
 echo "Setting up git hooks..."
-git config core.hooksPath "$REPO_ROOT/.githooks"
+# Relative, so each worktree runs its own .githooks. core.hooksPath lives in the shared .git/config;
+# an absolute path written from a worktree (npm ci runs this as `prepare`) hijacked every checkout's
+# hooks, and removing that worktree silently disabled them.
+git config core.hooksPath .githooks  # fork: relative-hooks-path
 echo "Git hooks configured to use .githooks directory"
 echo "Done!"

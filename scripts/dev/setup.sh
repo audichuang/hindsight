@@ -153,7 +153,7 @@ ensure_env_file() {
 
 setup_git_hooks() {
     step "Git hooks"
-    if [ "$(git config --get core.hooksPath || true)" = "$ROOT_DIR/.githooks" ]; then
+    if [ "$(git config --get core.hooksPath || true)" = ".githooks" ]; then  # fork: relative-hooks-path
         ok "hooks already configured"
         return
     fi
