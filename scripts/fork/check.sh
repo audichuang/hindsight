@@ -1,8 +1,8 @@
 #!/bin/bash
 # Local gate before pushing a fork branch: what Fork CI's typecheck-and-lint job checks (ty, lint with
-# no diff left, OpenAPI spec and generated docs up to date), the fork's own api-slim tests, and Fork CI's
-# control-plane job. Fork CI runs the full suite and the system tests; this catches the mistakes that
-# would otherwise cost a CI round.
+# no diff left, OpenAPI spec and generated docs up to date), the fork's api-slim tests and the upstream
+# ones around its hooks, and Fork CI's control-plane job. Fork CI runs the full suite and the system
+# tests; this catches the mistakes that would otherwise cost a CI round.
 #
 # Usage: scripts/fork/check.sh [<upstream-tag>]
 #   <upstream-tag>  base of the fork commits; its test files that the fork added or changed are run.
@@ -72,14 +72,21 @@ step "generated files (upstream's verify-generated-files, minus the Rust client)
 step "fork rebase tooling"
 for t in rebase-onto review-bundle; do bash "scripts/fork/$t.test.sh" >/dev/null || fail "scripts/fork/$t.test.sh"; done
 
-step "fork tests (added or changed since $base)"
+step "fork tests, and the upstream tests around the fork's hooks"
+# The fork's own test files, plus the upstream ones that exercise a hooked module (hook-tests.py says
+# why). About 170 files and three minutes. Same deselections as Fork CI (ci-deselect.txt).
+list=$(mktemp)
+git diff --name-only --diff-filter=AM "$base" HEAD -- 'hindsight-api-slim/tests/test_*.py' \
+  | sed 's#^hindsight-api-slim/##' > "$list"
+python3 -I scripts/fork/hook-tests.py >> "$list" || { rm -f "$list"; fail "scripts/fork/hook-tests.py"; }
 tests=()  # macOS ships bash 3.2: no mapfile
-while IFS= read -r f; do tests+=("${f#hindsight-api-slim/}"); done \
-  < <(git diff --name-only --diff-filter=AM "$base" HEAD -- 'hindsight-api-slim/tests/test_*.py')
+while IFS= read -r f; do tests+=("$f"); done < <(sort -u "$list"); rm -f "$list"
+deselect=()
+while IFS= read -r t; do [ -z "$t" ] || deselect+=(--deselect "$t"); done < scripts/fork/ci-deselect.txt
 if [ "${#tests[@]}" -eq 0 ]; then
   echo "none"
 else
-  (cd hindsight-api-slim && uv run pytest "${tests[@]}" -q -m "not hs_llm_mat and not hs_llm_core") \
+  (cd hindsight-api-slim && uv run pytest "${tests[@]}" "${deselect[@]}" -q -m "not hs_llm_mat and not hs_llm_core") \
     || fail "fork tests"
 fi
 
@@ -96,4 +103,4 @@ run "knip" sh -c 'cd hindsight-control-plane && npx --yes knip@5 --no-progress -
 run "control-plane build" env PORT=9999 npm run build --workspace=hindsight-control-plane
 [ -z "$(git status --porcelain)" ] || { git status --short; fail "the control-plane steps changed the files above"; }
 
-printf '\ncheck.sh: OK (%d fork test files). Full suite and system tests run in Fork CI.\n' "${#tests[@]}"
+printf '\ncheck.sh: OK (%d test files). Full suite and system tests run in Fork CI.\n' "${#tests[@]}"
