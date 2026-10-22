@@ -51,6 +51,9 @@ def load_dotenv_for_entrypoint() -> None:
     """
     load_dotenv(find_dotenv(usecwd=True), override=True)
     clear_config_cache()
+    from .engine.prompt_tone import validate_prompt_tone_env  # fork: prompt-tone
+
+    validate_prompt_tone_env()  # fork: prompt-tone (a bad HINDSIGHT_API_PROMPT_TONE fails the entry point)
 
 
 class ConfigFieldAccessError(AttributeError):
@@ -6009,3 +6012,12 @@ ENV_CODEX_MAX_OUTPUT_DELTAS = "HINDSIGHT_API_CODEX_MAX_OUTPUT_DELTAS"
 def codex_output_cap_env() -> str | None:
     """Raw HINDSIGHT_API_CODEX_MAX_OUTPUT_DELTAS; parsed and validated in engine/providers/codex_output_cap.py."""
     return os.environ.get(ENV_CODEX_MAX_OUTPUT_DELTAS)
+
+
+# fork: prompt-tone
+ENV_PROMPT_TONE = "HINDSIGHT_API_PROMPT_TONE"
+
+
+def prompt_tone_env() -> str | None:
+    """Raw HINDSIGHT_API_PROMPT_TONE; parsed and validated in engine/prompt_tone.py."""
+    return os.environ.get(ENV_PROMPT_TONE)

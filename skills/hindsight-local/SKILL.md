@@ -72,7 +72,7 @@ Use `memory reflect` to synthesize context:
 uvx hindsight-embed memory reflect default "How should I approach this task based on past experience?"
 ```
 
-## IMPORTANT: When to Store Memories
+## When to Store Memories
 
 **Always store** after you learn something valuable:
 
@@ -94,9 +94,9 @@ uvx hindsight-embed memory reflect default "How should I approach this task base
 - Architecture decisions and rationale
 - Dependencies or version requirements
 
-## IMPORTANT: When to Recall Memories
+## When to Recall Memories
 
-**Always recall** before:
+Recall before:
 - Starting any non-trivial task
 - Making decisions about implementation
 - Suggesting tools, libraries, or approaches

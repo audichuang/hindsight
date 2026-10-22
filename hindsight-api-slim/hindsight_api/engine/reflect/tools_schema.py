@@ -10,6 +10,7 @@ The reflect agent uses a hierarchical retrieval strategy:
 
 import copy
 
+from ..prompt_tone import soften_reflect_tools  # fork: prompt-tone
 from .prompts import NO_IDS_IN_TEXT_RULE
 
 # Tool definitions in OpenAI format
@@ -429,6 +430,7 @@ TOOL_ANSWER_READY = {
 }
 
 
+@soften_reflect_tools  # fork: prompt-tone
 def get_reflect_tools(
     directive_rules: list[str] | None = None,
     include_mental_models: bool = True,

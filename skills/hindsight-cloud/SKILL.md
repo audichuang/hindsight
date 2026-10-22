@@ -92,7 +92,7 @@ Use `memory reflect` to synthesize context:
 hindsight memory reflect <bank-id> "How should I approach this task based on past experience?"
 ```
 
-## IMPORTANT: When to Store Memories
+## When to Store Memories
 
 This is a **shared team bank**. Store knowledge that benefits the team. For individual preferences, include the person's name.
 
@@ -127,9 +127,9 @@ This is a **shared team bank**. Store knowledge that benefits the team. For indi
 - Integration points with external systems
 - Domain knowledge and business logic explanations
 
-## IMPORTANT: When to Recall Memories
+## When to Recall Memories
 
-**Always recall** before:
+Recall before:
 - Starting any non-trivial task
 - Making decisions about implementation
 - Suggesting tools, libraries, or approaches

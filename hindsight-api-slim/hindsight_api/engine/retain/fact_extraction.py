@@ -1612,6 +1612,9 @@ def _build_extraction_prompt_and_schema(config) -> ExtractionPrompt:
         # Concise is the default, and also what custom mode falls back to with no
         # instructions configured — there is nothing to substitute into the custom template.
         base_prompt = CONCISE_FACT_EXTRACTION_PROMPT
+    from ..prompt_tone import rewrite_text  # fork: prompt-tone
+
+    base_prompt = rewrite_text(base_prompt)  # fork: prompt-tone
     prompt = base_prompt.format(
         language_section=language_section,
         retain_mission_section=retain_mission_section,
