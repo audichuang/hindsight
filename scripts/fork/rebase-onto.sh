@@ -15,7 +15,8 @@
 # Every queued commit ends in the ledger as picked, empty (applied but changed nothing: upstream has it) or
 # dropped with a reason; the run ends with a check that none is missing. To say in the message what a
 # resolution changed (so the history does not claim the old fix), commit it yourself with `git commit`,
-# then `continue`: a commit made since the stop is recorded as the pick.
+# then `continue`: the commits made since the stop are recorded as the pick. Make more than one there
+# when the resolution also needs a fix to an earlier fork commit's code or tests.
 set -euo pipefail
 state="$(cd "$(git rev-parse --git-dir)" && pwd)/fork-rebase"
 self="$state/rebase-onto.sh"
@@ -92,7 +93,9 @@ case "$cmd" in
     [ -z "$(git diff --name-only --diff-filter=U)" ] || die "unresolved conflicts remain"
     if [ -f "$state/stop-head" ] && [ "$(git rev-parse HEAD)" != "$(cat "$state/stop-head")" ]; then
       git cherry-pick --quit >/dev/null 2>&1 || true   # committed by hand since the stop
-      echo "$c picked $(git rev-parse --short HEAD)" >> "$ledger"
+      extra=$(($(git rev-list --count "$(cat "$state/stop-head")..HEAD") - 1))
+      note=""; [ "$extra" -eq 0 ] || note=" (+$extra more commits)"
+      echo "$c picked $(git rev-parse --short HEAD)$note" >> "$ledger"
     elif [ "$(git rev-parse -q --verify CHERRY_PICK_HEAD || true)" != "$c" ]; then
       rm -f "$state/stop-head"; pick_rest   # the pick never started, or is not this commit's: retry it
       exit 0

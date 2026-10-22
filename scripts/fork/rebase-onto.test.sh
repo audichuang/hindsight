@@ -53,6 +53,18 @@ if [ -f "$ledger3" ] && ! grep -q ' empty' "$ledger3" && [ "$(grep -c ' picked '
   ok "hand-committed resolution counts as picked"
 else bad "hand-committed resolution"; cat "$tmp/out3" "$ledger3" 2>/dev/null; fi
 
+# 3b. Two commits made during one stop (a fix to an earlier fork commit, then the resolution): one pick.
+make_repo twocommits conflict
+bash "$script" start v2.0.0 fork-ref >/dev/null 2>&1 || true
+printf 'resolved\n' > a.txt; git add a.txt; git commit -qm "fork: a, re-anchored on v2"
+printf 'extra\n' > e.txt; git add e.txt; git commit -qm "fork: fix an earlier commit for v2"
+bash "$(copy)" continue >"$tmp/out3b" 2>&1 || true
+ledger3b="$(git rev-parse --absolute-git-dir)/fork-rebase.last/ledger"
+if [ -f "$ledger3b" ] && grep -q ' picked [0-9a-f]* (+1 more commits)$' "$ledger3b" \
+   && [ "$(git log --format=%s v2.0.0..HEAD | wc -l | tr -d ' ')" = 4 ]; then
+  ok "two commits at one stop are one pick"
+else bad "two commits at one stop"; cat "$tmp/out3b" "$ledger3b" 2>/dev/null; fi
+
 # 4. Drop: recorded with its reason, run completes with the other two picked.
 make_repo drop conflict
 bash "$script" start v2.0.0 fork-ref >/dev/null 2>&1 || true
