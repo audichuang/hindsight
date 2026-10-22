@@ -73,29 +73,20 @@ step "fork rebase tooling"
 for t in rebase-onto review-bundle; do bash "scripts/fork/$t.test.sh" >/dev/null || fail "scripts/fork/$t.test.sh"; done
 
 step "fork tests, and the upstream tests around the fork's hooks"
-# The fork's own test files, plus every upstream test file that imports a module carrying a `# fork:`
-# hook: a hook can break an upstream test's fakes without touching any fork test (v1.1.0: the claude-code
-# error-usage hook read `message.usage`, which the fakes in test_content_policy_refusal_permanent.py
-# lack, and only CI caught it). Modules nearly every test imports are left to CI, or this would be the
-# whole suite. About 150 files and two minutes.
-hubs='^hindsight_api/(config|main|engine/memory_engine|api/http|worker/main)\.py$'
+# The fork's own test files, plus the upstream ones that exercise a hooked module (hook-tests.py says
+# why). About 170 files and three minutes. Same deselections as Fork CI (ci-deselect.txt).
 list=$(mktemp)
 git diff --name-only --diff-filter=AM "$base" HEAD -- 'hindsight-api-slim/tests/test_*.py' \
   | sed 's#^hindsight-api-slim/##' > "$list"
-(
-  cd hindsight-api-slim
-  git grep -l '# fork:' -- 'hindsight_api/*.py' | grep -vE "$hubs" | sed 's#\.py$##; s#/__init__$##' \
-    | while read -r mod; do
-        dotted=${mod//\//.}; pkg=${dotted%.*}; leaf=${dotted##*.}
-        grep -rlE --include='test_*.py' "(from|import) +${dotted//./\\.}\b|from +${pkg//./\\.} +import +.*\b${leaf}\b" tests || true
-      done
-) >> "$list"
+python3 -I scripts/fork/hook-tests.py >> "$list" || { rm -f "$list"; fail "scripts/fork/hook-tests.py"; }
 tests=()  # macOS ships bash 3.2: no mapfile
 while IFS= read -r f; do tests+=("$f"); done < <(sort -u "$list"); rm -f "$list"
+deselect=()
+while IFS= read -r t; do [ -z "$t" ] || deselect+=(--deselect "$t"); done < scripts/fork/ci-deselect.txt
 if [ "${#tests[@]}" -eq 0 ]; then
   echo "none"
 else
-  (cd hindsight-api-slim && uv run pytest "${tests[@]}" -q -m "not hs_llm_mat and not hs_llm_core") \
+  (cd hindsight-api-slim && uv run pytest "${tests[@]}" "${deselect[@]}" -q -m "not hs_llm_mat and not hs_llm_core") \
     || fail "fork tests"
 fi
 

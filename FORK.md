@@ -37,7 +37,7 @@ A fork commit whose fix upstream has since made: take upstream's code and drop t
 
 Order the work so each slow run happens once:
 
-1. While resolving conflicts, run only the fork tests and the upstream tests around each hook. `check.sh` runs exactly that set: the fork's test files plus every upstream test file importing a module that carries a hook.
+1. While resolving conflicts, run only the fork tests and the upstream tests around each hook. `check.sh` runs exactly that set: the fork's test files plus the upstream test files that import or patch a module carrying a hook (`scripts/fork/hook-tests.py`).
 2. Once they pass, run `scripts/fork/check.sh`, push the branch and open a PR into `ci-base/<new-tag>` (a branch at the upstream tag), so Fork CI runs the full api-slim suite and `hindsight-system-tests` on it.
 3. Start the review ("Before tagging" step 3) at the same time; it finds regressions the suites do not, such as a table the fork reads gaining new kinds of rows.
 4. Each review fix gets its targeted tests, `check.sh` and a CI run.

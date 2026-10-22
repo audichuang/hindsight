@@ -65,6 +65,16 @@ if [ -f "$ledger3b" ] && grep -q ' picked [0-9a-f]* (+1 more commits)$' "$ledger
   ok "two commits at one stop are one pick"
 else bad "two commits at one stop"; cat "$tmp/out3b" "$ledger3b" 2>/dev/null; fi
 
+# 3c. HEAD moved back during the stop (abort, then reset): must stop, not record lost commits as picked.
+make_repo moveback conflict
+bash "$script" start v2.0.0 fork-ref >/dev/null 2>&1 || true
+git cherry-pick --abort; git reset -q --hard HEAD~1
+status=0; bash "$(copy)" continue >"$tmp/out3c" 2>&1 || status=$?
+if [ "$status" -ne 0 ] && grep -q 'no longer contains the stop point' "$tmp/out3c" \
+   && [ ! -e "$(git rev-parse --absolute-git-dir)/fork-rebase.last" ]; then
+  ok "HEAD moved back during a stop is refused"
+else bad "HEAD moved back (status $status)"; cat "$tmp/out3c"; fi
+
 # 4. Drop: recorded with its reason, run completes with the other two picked.
 make_repo drop conflict
 bash "$script" start v2.0.0 fork-ref >/dev/null 2>&1 || true

@@ -21,12 +21,14 @@ pid() { git show --binary --format= "$1" | git patch-id --verbatim | cut -d' ' -
 paths() { git show --name-only --format= "$1"; }
 # per <commit>...: upstream's changes to the files these commits touch, one file per fork commit.
 per() {
-  local f
-  f="$out/upstream/$(printf '%02d' "$n_per")-$(git log -1 --format=%s "${!#}" | tr -c 'A-Za-z0-9' '-' | cut -c1-60).diff"
-  # shellcheck disable=SC2046
-  git diff "$old" "$new" -- $(for c in "$@"; do paths "$c"; done | sort -u) > "$f"
-  [ -s "$f" ] || rm -f "$f"
+  local f p
   n_per=$((n_per + 1))
+  p=$(for c in "$@"; do paths "$c"; done | sort -u)
+  [ -n "$p" ] || return 0   # an empty commit: `git diff --` with no paths would be the whole release
+  f="$out/upstream/$(printf '%02d' "$((n_per - 1))")-$(git log -1 --format=%s "${!#}" | tr -c 'A-Za-z0-9\n' '-' | cut -c1-60).diff"
+  # shellcheck disable=SC2086
+  git diff "$old" "$new" -- $p > "$f"
+  [ -s "$f" ] || rm -f "$f"
 }
 rm -rf "$out/upstream"; mkdir -p "$out/upstream"
 : > "$out/range-diff.txt"; : > "$out/extra-commits.diff"; : > "$out/paths"; : > "$out/extra-list"

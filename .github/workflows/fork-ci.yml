@@ -78,12 +78,11 @@ jobs:
     # Copilot CLI. They fail the same way on develop with no feature applied.
     - name: Run tests (shard ${{ matrix.shard }}/3)
       working-directory: ./hindsight-api-slim
+      # Tests that need credentials or a real LLM; scripts/fork/check.sh reads the same list.
       run: >-
         uv run --with pytest-split pytest tests
         -m "not hs_llm_mat and not hs_llm_core"
-        --deselect tests/test_fact_extraction_analysis.py
-        --deselect tests/test_fact_extraction_output_ratio.py
-        --deselect "tests/test_llm_timeout_propagation.py::test_every_network_provider_receives_the_resolved_timeout[github-copilot-extra3]"
+        $(sed 's/^/--deselect /' ../scripts/fork/ci-deselect.txt)
         --splits 3 --group ${{ matrix.shard }}
 
   system-tests:

@@ -45,6 +45,7 @@ printf 'it("keeps this", () => {});\nit(\x27it\\\x27s escaped\x27, () => {});\n'
 git commit -qam "fork: tests, trimmed"
 git cherry-pick -x "$d" >/dev/null                                                                        # message only
 printf "${hook_body#    }" >> e.py; git commit -qam "fork: hook"                                      # hook() dedented
+git commit -q --allow-empty -m "fork: note only"                                                         # empty extra
 bash "$script" v1.0.0 "$oldhead" v2.0.0 HEAD "$tmp/out" >/dev/null
 
 grep -q 'fork: abc' "$tmp/out/range-diff.txt" && ok "pair that lost a file's patch is listed" || bad "pair that lost a file's patch"
@@ -55,5 +56,8 @@ grep -q 'removed: each: guards fork behaviour' "$tmp/out/fork-tests.txt" && ok "
 grep -q 'removed: each: title on the next line' "$tmp/out/fork-tests.txt" && ok "title-on-next-line removal named" || bad "title on next line"
 grep -qE 'removed: (keeps this|it)' "$tmp/out/fork-tests.txt" && bad "kept test reported removed" || ok "kept tests (one with an escaped quote) not reported"
 grep -q '^DELETED  pkg/src/y.test.ts' "$tmp/out/fork-tests.txt" && ok "colocated test file deletion" || bad "colocated test file"
+ls "$tmp/out/upstream" | grep -q -- '-fork--abc.diff' && ok "per-commit upstream diff for the changed pair" || bad "per-commit upstream diff"
+ls "$tmp/out/upstream" | grep -q 'note-only' && bad "empty commit got the whole release as its upstream diff" \
+  || ok "empty commit gets no per-commit upstream diff"
 
 [ "$failures" -eq 0 ] && echo "all passed" || { cat "$tmp/out/README.txt" "$tmp/out/fork-tests.txt"; echo "$failures failed"; exit 1; }

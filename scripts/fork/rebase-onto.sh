@@ -92,7 +92,12 @@ case "$cmd" in
     n=$(cat "$pos"); c=$(sed -n "$((n + 1))p" "$queue")
     [ -z "$(git diff --name-only --diff-filter=U)" ] || die "unresolved conflicts remain"
     if [ -f "$state/stop-head" ] && [ "$(git rev-parse HEAD)" != "$(cat "$state/stop-head")" ]; then
-      git cherry-pick --quit >/dev/null 2>&1 || true   # committed by hand since the stop
+      # Committed by hand since the stop: only on top of it, never by moving HEAD back or sideways
+      # (a reset or an amend there would silently lose picked commits), and with nothing left over.
+      git merge-base --is-ancestor "$(cat "$state/stop-head")" HEAD \
+        || die "HEAD no longer contains the stop point $(cat "$state/stop-head"); restore it (git reflog) and commit on top"
+      [ -z "$(git status --porcelain --untracked-files=no)" ] || die "uncommitted changes remain; commit or discard them first"
+      git cherry-pick --quit >/dev/null 2>&1 || true
       extra=$(($(git rev-list --count "$(cat "$state/stop-head")..HEAD") - 1))
       note=""; [ "$extra" -eq 0 ] || note=" (+$extra more commits)"
       echo "$c picked $(git rev-parse --short HEAD)$note" >> "$ledger"
