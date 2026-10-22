@@ -138,6 +138,20 @@ def validate_prompt_tone_env() -> None:
     prompt_tone_enabled()
 
 
+def _switch_on() -> bool:
+    """The switch as the hooks read it: an invalid value counts as off instead of raising.
+
+    The hooks also run at import time (``reflect/prompts.py`` builds ``FINAL_SYSTEM_PROMPT``),
+    before an entry point has applied its ``.env``. An inherited typo that the ``.env`` then
+    overrides must not stop startup there; ``validate_prompt_tone_env`` rejects whatever value
+    is in effect once the ``.env`` is loaded.
+    """
+    try:
+        return prompt_tone_enabled()
+    except ValueError:
+        return False
+
+
 def _caller_strings(value: Any) -> list[str]:
     """Every string inside a builder's arguments (nested dicts, lists and tuples included).
 
@@ -175,7 +189,7 @@ def rewrite_text(text: str, rewrites: tuple[tuple[str, str], ...] = REWRITES) ->
 
     For upstream-owned text only (a template before caller values are filled in).
     """
-    if not prompt_tone_enabled():
+    if not _switch_on():
         return text
     return _rewrite_outside(text, [], rewrites)
 
@@ -186,7 +200,7 @@ def soften_prompt(func: _F) -> _F:
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         text = func(*args, **kwargs)
-        if not prompt_tone_enabled():
+        if not _switch_on():
             return text
         return _rewrite_outside(text, _caller_strings([args, kwargs]), REWRITES)
 
@@ -205,7 +219,7 @@ def soften_reflect_tools(func: _F) -> _F:
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         tools = func(*args, **kwargs)
-        if not prompt_tone_enabled():
+        if not _switch_on():
             return tools
         rules = signature.bind(*args, **kwargs).arguments.get("directive_rules") or []
         if not rules:

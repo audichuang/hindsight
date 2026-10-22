@@ -297,3 +297,15 @@ def test_dotenv_typo_fails_the_entry_point(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     with pytest.raises(ValueError, match=ENV_PROMPT_TONE):
         load_dotenv_for_entrypoint()
+
+
+def test_inherited_typo_overridden_by_dotenv_does_not_block_startup(tmp_path, monkeypatch):
+    """Hooks run at import, before the .env; only the value in effect after it is validated."""
+    from hindsight_api.config import load_dotenv_for_entrypoint
+
+    monkeypatch.setenv(ENV_PROMPT_TONE, "ture")
+    assert build_final_system_prompt() == build_final_system_prompt.__wrapped__()  # no raise, off
+    (tmp_path / ".env").write_text(f"{ENV_PROMPT_TONE}=false\n")
+    monkeypatch.chdir(tmp_path)
+    load_dotenv_for_entrypoint()
+    assert prompt_tone.prompt_tone_enabled() is False

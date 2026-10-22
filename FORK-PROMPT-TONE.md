@@ -8,7 +8,7 @@ It is off unless `HINDSIGHT_API_PROMPT_TONE` is set. With the variable unset, ev
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `HINDSIGHT_API_PROMPT_TONE` | `true`/`1` turns the rewrites on server-wide (every bank, every LLM lane). `false`/`0`, empty or unset leaves them off. Any other value raises `ValueError`. `load_dotenv_for_entrypoint` validates it right after applying the `.env`, so a typo fails the API server, the worker and the admin CLI at startup. The switch is read on every prompt build (one dict lookup), never cached, so a `.env` loaded after the modules were imported still takes effect. | unset |
+| `HINDSIGHT_API_PROMPT_TONE` | `true`/`1` turns the rewrites on server-wide (every bank, every LLM lane). `false`/`0`, empty or unset leaves them off. Any other value raises `ValueError`. `load_dotenv_for_entrypoint` validates it right after applying the `.env`, so a typo fails the API server, the worker and the admin CLI at startup. The switch is read on every prompt build (one dict lookup), never cached, so a `.env` loaded after the modules were imported still takes effect. The hooks themselves treat an invalid value as off: they also run at import time, before the `.env` is applied, and an inherited typo that the `.env` overrides must not stop startup. | unset |
 
 Turn it on only after comparing retain and reflect output with it off and on, on the lanes the deployment runs (see "Rollout").
 
