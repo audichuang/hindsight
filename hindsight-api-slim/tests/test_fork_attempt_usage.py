@@ -498,3 +498,19 @@ def test_a_malformed_event_type_never_raises(monkeypatch, flag, bad_type):
     load_cost_settings.cache_clear()
     returned, stashed = _stash_in_a_fresh_context(None, {"type": bad_type, "response": {"usage": _usage(1, 1)}})
     assert returned is None and stashed is None
+
+
+def test_a_delta_event_never_reads_the_cost_settings(monkeypatch):
+    """The hook runs on every SSE data line; only a terminal event may reach the flag check."""
+    from hindsight_api.engine import llm_attempt_usage
+
+    reads: list[None] = []
+
+    def counting() -> bool:  # the hook swallows exceptions, so count instead of raising
+        reads.append(None)
+        return True
+
+    monkeypatch.setattr(llm_attempt_usage, "_cost_enabled", counting)
+    delta = {"type": "response.output_text.delta", "delta": "x"}
+    assert llm_attempt_usage.stash_codex_event_usage("response.output_text.delta", delta) is None
+    assert reads == []

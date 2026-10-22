@@ -3,7 +3,8 @@
 A hook can break an upstream test's fakes without touching any fork test (v1.1.0: the claude-code
 error-usage hook read `message.usage`, which the fakes in test_content_policy_refusal_permanent.py lack,
 and only CI caught it). A test file counts when it imports a hooked module in any form (`import a.b`,
-`from a import b`, multi-line, aliased) or names one in a string, such as a `mock.patch` target.
+`from a import b`, multi-line, aliased) or names one in a string, such as a `mock.patch` target; so does
+a test file that imports a selected test file (shared fakes and helpers).
 Modules nearly every test imports are left to CI, or this would be the whole suite.
 
 Usage: python3 scripts/fork/hook-tests.py   (from the repo root; prints paths relative to hindsight-api-slim)
@@ -44,9 +45,11 @@ def names_in(tree: ast.AST) -> set[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            names.add(node.module)
-            names.update(f"{node.module}.{alias.name}" for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            # `from .test_x import y` inside tests/ names the test module tests.test_x.
+            module = node.module if node.level == 0 else f"tests.{node.module}"
+            names.add(module)
+            names.update(f"{module}.{alias.name}" for alias in node.names)
         elif isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.startswith("hindsight_api."):
             names.add(node.value)
     return names
@@ -54,15 +57,26 @@ def names_in(tree: ast.AST) -> set[str]:
 
 def main() -> None:
     mods = hooked_modules()
-    for test in sorted((ROOT / "tests").glob("test_*.py")):
+    tests: dict[str, set[str]] = {}  # tests.<dotted module> -> names it imports
+    for test in sorted((ROOT / "tests").rglob("test_*.py")):
         try:
             names = names_in(ast.parse(test.read_text(encoding="utf-8")))
         except SyntaxError as exc:
             sys.exit(f"{test}: {exc}")
-        # A name hits when it is the module or anything inside it (a function, a patch target).
-        if any(n == m or n.startswith(m + ".") for n in names for m in mods):
-            print(test.relative_to(ROOT))
+        tests[str(test.relative_to(ROOT).with_suffix("")).replace("/", ".")] = names
 
+    def hits(names: set[str], targets: set[str]) -> bool:
+        # A name hits when it is the module or anything inside it (a function, a patch target).
+        return any(n == m or n.startswith(m + ".") for n in names for m in targets)
+
+    selected = {t for t, names in tests.items() if hits(names, mods)}
+    while True:  # then every test file importing a selected one, until nothing changes
+        more = {t for t, names in tests.items() if t not in selected and hits(names, selected)}
+        if not more:
+            break
+        selected |= more
+    for t in sorted(selected):
+        print(t.replace(".", "/") + ".py")
 
 if __name__ == "__main__":
     main()
