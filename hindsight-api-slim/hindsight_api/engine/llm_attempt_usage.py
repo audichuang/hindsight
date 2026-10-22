@@ -171,7 +171,8 @@ def stash_codex_event_usage(event_type: str | None, data: Any) -> TokenUsage | N
     The backend charges ``response.completed``, ``response.incomplete`` and ``response.failed``.
     Upstream reads usage from ``response.completed`` only (#5693), and stashes it only after the
     stream has ended, so a connection dropped after the event (or the deadline firing) loses it, a
-    failed response raises before any stash, and a truncated (incomplete) reply is recorded at chars/4.
+    failed response raises before any stash, and a truncated (incomplete) reply is recorded at chars/4
+    (``call()``) or as zeros (``call_with_tools``).
     Stashed here, each attempt keeps what it was charged; a later stash in the same attempt (upstream's,
     after the parser returns) replaces this one, so nothing is counted twice. The usage is returned so
     the parser keeps an incomplete reply's real counts in place of the chars/4 fallback (a completed
@@ -180,13 +181,14 @@ def stash_codex_event_usage(event_type: str | None, data: Any) -> TokenUsage | N
     """
     if not isinstance(data, dict):
         return None
+    # Either name counts, as in upstream's completed check: the parsers keep the last `event:` line across
+    # events, so a data-only event can arrive under a stale name. Anything but a string is ignored, so this
+    # cannot raise; checked before the flag, so a delta line never reads the cost settings.
+    names = {name for name in (event_type, data.get("type")) if isinstance(name, str)}
+    if not names & _CODEX_USAGE_EVENTS:
+        return None
     try:
         if not _cost_enabled():
-            return None
-        # Either name counts, as in upstream's completed check: the parsers keep the last `event:` line
-        # across events, so a data-only event can arrive under a stale name. Anything but a string is ignored.
-        names = {name for name in (event_type, data.get("type")) if isinstance(name, str)}
-        if not names & _CODEX_USAGE_EVENTS:
             return None
         from .llm_cost import alias_codex_usage_note
         from .llm_trace import LLMResponseUsage, stash_response_usage

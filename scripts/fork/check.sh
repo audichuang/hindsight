@@ -70,7 +70,7 @@ step "generated files (upstream's verify-generated-files, minus the Rust client)
 [ -z "$(git status --porcelain)" ] || { git status --short; fail "generated files are stale or new; commit the files above"; }
 
 step "fork rebase tooling"
-for t in rebase-onto review-bundle; do bash "scripts/fork/$t.test.sh" >/dev/null || fail "scripts/fork/$t.test.sh"; done
+for t in rebase-onto review-bundle hook-tests; do bash "scripts/fork/$t.test.sh" >/dev/null || fail "scripts/fork/$t.test.sh"; done
 
 step "fork tests, and the upstream tests around the fork's hooks"
 # The fork's own test files, plus the upstream ones that exercise a hooked module (hook-tests.py says
