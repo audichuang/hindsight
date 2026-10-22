@@ -70,6 +70,7 @@ async def _insert(
     operation: str = "retain",
     usage: dict | None = None,
     status: str = "success",
+    scope: str | None = None,
 ) -> str:
     row_id = uuid4()
     llm_info = {"usage": usage} if usage is not None else {}
@@ -78,8 +79,8 @@ async def _insert(
         await conn.execute(
             f"INSERT INTO {fq_table('llm_requests')} "
             "(id, bank_id, operation, status, provider, model, started_at, input_tokens, output_tokens, "
-            "cached_tokens, thoughts_tokens, llm_info) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)",
+            "cached_tokens, thoughts_tokens, llm_info, scope) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13)",
             row_id,
             bank_id,
             operation,
@@ -92,6 +93,7 @@ async def _insert(
             cached_tokens,
             thoughts_tokens,
             json.dumps(llm_info),
+            scope,
         )
     return str(row_id)
 
@@ -243,6 +245,49 @@ async def test_window_and_operation_filters(cost_client, memory, bank_id):
 
     by_operation = await client.get(COST_PATH.format(bank_id=bank_id), params={"period": "30d", "operation": "retain"})
     assert [m["calls"] for m in by_operation.json()["models"]] == [1]
+
+
+@pytest.mark.asyncio
+async def test_embedding_rerank_and_decision_rows_are_not_costed(cost_client, memory, bank_id):
+    """Since upstream #5835 llm_requests also holds embedding, rerank and decision-model rows."""
+    _, client = cost_client
+    await _create_bank(client, bank_id)
+    now = datetime.now(UTC)
+    llm = await _insert(
+        memory,
+        bank_id,
+        provider="anthropic",
+        model="claude-haiku-5-5",
+        started_at=now,
+        input_tokens=100,
+        output_tokens=10,
+        scope="memory",
+    )
+    others = [
+        await _insert(
+            memory,
+            bank_id,
+            provider=provider,
+            model=model,
+            started_at=now,
+            input_tokens=500,
+            output_tokens=0,
+            scope=scope,
+        )
+        for provider, model, scope in (
+            ("openai", "text-embedding-3-small", "embedding_retain"),
+            ("cohere", "rerank-v3.5", "rerank"),
+            ("typesafe", "decision", "decision_recall"),
+        )
+    ]
+
+    summary = await client.get(COST_PATH.format(bank_id=bank_id), params={"period": "7d"})
+    assert summary.status_code == 200
+    assert [(m["provider"], m["calls"]) for m in summary.json()["models"]] == [("anthropic", 1)]
+    assert summary.json()["unpriced_calls"] == 0
+
+    rows = await client.get(ROWS_PATH.format(bank_id=bank_id), params={"ids": ",".join([llm, *others])})
+    assert set(rows.json()["items"]) == {llm}
 
 
 @pytest.mark.asyncio

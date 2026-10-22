@@ -281,3 +281,24 @@ def test_codex_keeps_the_attempt_meter_hooks():
         "            attempt.feed(text)  # fork: attempt-usage\n            if seen_chars > _MAX_SSE_BODY_CHARS:"
         in body
     )
+
+
+def test_a_new_attempt_forgets_the_previous_attempts_cost_note(cost_on):
+    """Stashes are tied to the Codex cost note by their counts, so each attempt must start without one:
+    otherwise a later chars/4 fallback with equal counts would pass as provider usage."""
+    from types import SimpleNamespace
+
+    from hindsight_api.engine.llm_attempt_usage import begin_codex_attempt, close_call_ledger, open_call_ledger
+    from hindsight_api.engine.llm_cost import codex_stash_breakdown, note_codex_usage
+
+    noted = SimpleNamespace(input_tokens=1000, output_tokens=50, cached_tokens=0, thoughts_tokens=0)
+    copy = SimpleNamespace(**vars(noted))
+    open_call_ledger()
+    try:
+        begin_codex_attempt()
+        note_codex_usage(noted, {"response": {"usage": {"input_tokens": 1000}}})
+        assert codex_stash_breakdown(copy) is not None  # the same attempt: equal counts tie the copy
+        begin_codex_attempt()
+        assert codex_stash_breakdown(copy) is None
+    finally:
+        close_call_ledger()

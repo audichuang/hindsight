@@ -23,6 +23,7 @@ from hindsight_api.engine.llm_cost import (
     read_stored_usage,
     summarize_costs,
 )
+from hindsight_api.engine.llm_trace import call_type_clause
 from hindsight_api.engine.schema import _is_oracle, fq_table
 
 if TYPE_CHECKING:
@@ -183,13 +184,16 @@ class LLMCostStore:
         )
 
     async def _fetch(self, where_sql: str, params: list[Any], limit: int | None) -> list[_StoredRow]:
-        """Rows for one bank as pricer inputs, newest first.
+        """LLM-call rows for one bank as pricer inputs, newest first.
 
+        ``llm_requests`` also holds embedding, rerank and decision-model rows (told apart by scope since
+        upstream #5835); they are not LLM calls, are not costed, and must not use up ``ROW_CAP``.
         The connection is held only for the query and the JSON decode; the conversion to
         ``RowUsage`` happens after it is released, so a 200k-row read does not pin a pool connection.
         """
         limit_sql = "" if limit is None else f" LIMIT {limit}"
-        sql = f"SELECT {_COLUMNS} FROM {fq_table('llm_requests')} WHERE {where_sql} ORDER BY started_at DESC{limit_sql}"
+        where = f"({where_sql}) AND {call_type_clause('llm')}"
+        sql = f"SELECT {_COLUMNS} FROM {fq_table('llm_requests')} WHERE {where} ORDER BY started_at DESC{limit_sql}"
         backend = await self._memory._get_backend()
         async with acquire_with_retry(backend) as conn:
             records = await conn.fetch(sql, *params)

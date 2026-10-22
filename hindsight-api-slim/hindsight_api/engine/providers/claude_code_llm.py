@@ -75,7 +75,10 @@ def _stash_error_result_usage(message: Any) -> None:  # fork: claude-code-error-
     raw = getattr(message, "usage", None)
     if not isinstance(raw, dict) or not raw:
         return
-    usage = _sdk_token_usage(raw, [], "")
+    try:
+        usage = _sdk_token_usage(raw, [], "")
+    except ValidationError:
+        return  # a malformed block must not replace the CLI's own error
     stash_response_usage(
         LLMResponseUsage(
             input_tokens=usage.input_tokens,
@@ -847,6 +850,7 @@ class ClaudeCodeLLM(LLMInterface):
                                 # above and break before reaching this branch. Only a genuine
                                 # error with nothing to return should surface (issue #2702).
                                 if not tool_calls:
+                                    _stash_error_result_usage(message)  # fork: claude-code-error-usage
                                     raise _result_error(message)
                             elif isinstance(message, ResultMessage):
                                 sdk_usage = message.usage or sdk_usage

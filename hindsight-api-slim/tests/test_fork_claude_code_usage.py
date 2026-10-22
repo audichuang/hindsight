@@ -406,3 +406,60 @@ def test_usage_helper_takes_nested_writes_when_the_total_is_missing():
     )
 
     assert folded.input_tokens == 1100  # 100 uncached + 1000 written
+
+
+@pytest.mark.asyncio
+async def test_call_with_tools_error_result_keeps_real_usage_in_stash(monkeypatch):
+    class _FakeClient:
+        def __init__(self, options: _FakeOptions) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def query(self, prompt: str) -> None:
+            return None
+
+        async def receive_response(self):
+            yield _FakeResultMessage(
+                subtype="success",
+                is_error=True,
+                result="API Error: 500 Internal server error",
+                usage=ANTHROPIC_USAGE,
+            )
+
+    _install_fake_sdk(monkeypatch, client_cls=_FakeClient)
+    _patch_observability(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="Internal server error"):
+        await _instantiate_provider().call_with_tools(
+            messages=_MESSAGES,
+            tools=[_RECALL_TOOL],
+            max_retries=0,
+            scope="reflect",
+            tool_choice=LLM_TOOL_CHOICE_AUTO,
+        )
+
+    stashed = current_response_usage()
+    assert stashed is not None
+    assert (stashed.input_tokens, stashed.output_tokens, stashed.cached_tokens) == (3210, 50, 3000)
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_error_usage_still_raises_the_cli_error(monkeypatch):
+    async def fake_query(prompt: str, options: _FakeOptions):
+        yield _FakeResultMessage(
+            subtype="success",
+            is_error=True,
+            result="API Error: 500 Internal server error",
+            usage={"input_tokens": 7, "cache_read_input_tokens": "x"},
+        )
+
+    _install_fake_sdk(monkeypatch, query_fn=fake_query)
+    _patch_observability(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="Internal server error"):
+        await _instantiate_provider().call(messages=_MESSAGES, max_retries=0, scope="test")

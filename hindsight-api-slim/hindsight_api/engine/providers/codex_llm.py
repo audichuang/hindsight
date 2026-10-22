@@ -314,14 +314,19 @@ def _usage_from_completed_event(event_type: str | None, data: Any) -> TokenUsage
     return result
 
 
-def _usage_from_failed_event(event_type: str | None, data: Any) -> TokenUsage | None:  # fork: codex-failed-usage
-    """The usage a ``response.failed`` or ``response.incomplete`` event carries, stashed when it is read.
+_TERMINAL_USAGE_EVENTS = ("response.completed", "response.failed", "response.incomplete")
 
-    Both are charged. A failed event raises right after this, so the stash is what the trace
-    records; an incomplete one ends the stream, so the parser also returns it as the reply's usage
-    instead of the char/4 estimate. Same ``response.usage`` shape as ``response.completed``.
+
+def _usage_from_terminal_event(event_type: str | None, data: Any) -> TokenUsage | None:  # fork: codex-failed-usage
+    """Stash the usage a terminal event carries as soon as it is read; return it when upstream would not.
+
+    All three are charged, and the stream can still fail after them (a failed event raises right
+    away; a completed one can be followed by a dropped connection before the body ends), so the
+    stash, not the parser's return value, is what an error trace records. For an incomplete event,
+    which upstream does not read, the usage is also returned as the reply's usage instead of the
+    char/4 estimate. Same ``response.usage`` shape as ``response.completed``.
     """
-    if event_type not in ("response.failed", "response.incomplete") or not isinstance(data, dict):
+    if event_type not in _TERMINAL_USAGE_EVENTS or not isinstance(data, dict):
         return None
     usage = _usage_from_completed_event("response.completed", data)
     if usage is not None:
@@ -333,7 +338,7 @@ def _usage_from_failed_event(event_type: str | None, data: Any) -> TokenUsage | 
                 thoughts_tokens=usage.thoughts_tokens,
             )
         )
-    return usage
+    return None if event_type == "response.completed" else usage
 
 
 @dataclass(frozen=True, slots=True)
@@ -1066,7 +1071,7 @@ class CodexLLM(LLMInterface):
 
                 try:
                     data = json.loads(data_str)
-                    usage = _usage_from_failed_event(event_type, data) or usage  # fork: codex-failed-usage
+                    usage = _usage_from_terminal_event(event_type, data) or usage  # fork: codex-failed-usage
                     _raise_on_sse_failure(event_type, data)
                     usage = _usage_from_completed_event(event_type, data) or usage
 
@@ -1329,7 +1334,7 @@ class CodexLLM(LLMInterface):
 
                 try:
                     data = json.loads(data_str)
-                    usage = _usage_from_failed_event(event_type, data) or usage  # fork: codex-failed-usage
+                    usage = _usage_from_terminal_event(event_type, data) or usage  # fork: codex-failed-usage
                     _raise_on_sse_failure(event_type, data)
                     usage = _usage_from_completed_event(event_type, data) or usage
 

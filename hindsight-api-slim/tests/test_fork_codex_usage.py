@@ -8,6 +8,7 @@ folded into ``output_tokens`` by the Responses API, so visible output is the rem
 import json
 from unittest.mock import MagicMock, patch
 
+import aiohttp
 import pytest
 from pydantic import BaseModel
 
@@ -275,3 +276,59 @@ async def test_response_incomplete_usage_replaces_the_char_estimate():
     assert result.usage.output_tokens == EXPECTED_OUTPUT
     assert result.usage.cached_tokens == EXPECTED_CACHED
     assert result.usage.thoughts_tokens == EXPECTED_THOUGHTS
+
+
+async def test_tool_call_response_failed_with_usage_is_stashed_before_raising():
+    """The tool-stream parser carries the same hook as the call() one."""
+    llm = _build_llm()
+    failed = _sse(
+        (
+            "response.failed",
+            {
+                "type": "response.failed",
+                "response": {"status": "failed", "usage": USAGE, "error": {"code": "server_error", "message": "boom"}},
+            },
+        )
+    )
+    with stub_codex_stream(llm, CodexReply(text=failed)):
+        with pytest.raises(CodexStreamError, match="server_error"):
+            await llm.call_with_tools(messages=_MESSAGES, tools=_TOOLS, max_retries=0)
+
+    usage = current_response_usage()
+    assert usage is not None
+    assert (usage.input_tokens, usage.output_tokens, usage.cached_tokens) == (
+        EXPECTED_INPUT,
+        EXPECTED_OUTPUT,
+        EXPECTED_CACHED,
+    )
+
+
+@pytest.mark.parametrize("path", ["call", "call_with_tools"])
+async def test_completed_usage_survives_a_connection_dropped_after_it(path):
+    """response.completed is charged even when the body then fails to finish; the stash records it."""
+    llm = _build_llm()
+    completed = json.dumps({"type": "response.completed", "response": {"usage": USAGE}})
+
+    async def _lines_then_drop(_response):
+        yield "event: response.completed"
+        yield f"data: {completed}"
+        raise aiohttp.ClientPayloadError("connection dropped before the body ended")
+
+    with (
+        stub_codex_stream(llm, CodexReply(text="")),
+        patch.object(llm, "_iter_sse_lines", _lines_then_drop),
+        pytest.raises(aiohttp.ClientPayloadError),
+    ):
+        if path == "call":
+            await llm.call(messages=_MESSAGES, response_format=_Facts, max_retries=0)
+        else:
+            await llm.call_with_tools(messages=_MESSAGES, tools=_TOOLS, max_retries=0)
+
+    usage = current_response_usage()
+    assert usage is not None
+    assert (usage.input_tokens, usage.output_tokens, usage.cached_tokens, usage.thoughts_tokens) == (
+        EXPECTED_INPUT,
+        EXPECTED_OUTPUT,
+        EXPECTED_CACHED,
+        EXPECTED_THOUGHTS,
+    )
