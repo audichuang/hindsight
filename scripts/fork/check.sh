@@ -32,9 +32,15 @@ run() {
 }
 
 step "dependencies"
-# CI installs from the lockfile on every run; reinstall whenever it changed since the last install here.
-lock=$(git hash-object package-lock.json)
+# CI installs from the lockfile on every run; reinstall whenever it or a manifest changed since the last
+# install here. A node_modules symlinked to another checkout (.gitignore) is never reinstalled through:
+# npm ci would empty the other checkout.
+lock=$(git hash-object package-lock.json package.json hindsight-control-plane/package.json \
+  hindsight-clients/typescript/package.json | tr -d '\n')
 if [ "$(cat node_modules/.fork-check-lock 2>/dev/null || true)" != "$lock" ]; then
+  for d in node_modules hindsight-control-plane/node_modules hindsight-clients/typescript/node_modules; do
+    [ ! -L "$d" ] || fail "$d is a symlink and the npm lockfile or manifests changed; give this checkout its own node_modules"
+  done
   npm ci --no-audit --no-fund --loglevel=error
   echo "$lock" > node_modules/.fork-check-lock
 fi
@@ -83,8 +89,9 @@ run "TypeScript SDK build" npm run build --workspace=hindsight-clients/typescrip
 run "control-plane tests" env CI=true TZ=UTC npm test --workspace=hindsight-control-plane
 run "i18n parity" npm run i18n:check --workspace=hindsight-control-plane
 run "knip" sh -c 'cd hindsight-control-plane && npx --yes knip@5 --no-progress --include files,dependencies,unlisted'
-# A PORT inherited from the shell moves next's distDir and rewrites the committed tsconfig.json.
-run "control-plane build" env -u PORT npm run build --workspace=hindsight-control-plane
+# PORT pinned to 9999: any other value (from the shell or a .env file, which next loads) moves next's
+# distDir away from the .next/ that build:standalone reads, and rewrites the committed tsconfig.json.
+run "control-plane build" env PORT=9999 npm run build --workspace=hindsight-control-plane
 [ -z "$(git status --porcelain)" ] || { git status --short; fail "the control-plane steps changed the files above"; }
 
 printf '\ncheck.sh: OK (%d fork test files). Full suite and system tests run in Fork CI.\n' "${#tests[@]}"
