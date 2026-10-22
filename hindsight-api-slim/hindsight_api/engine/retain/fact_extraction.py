@@ -1617,6 +1617,9 @@ def _build_extraction_prompt_and_schema(config) -> ExtractionPrompt:
         retain_mission_section=retain_mission_section,
         custom_instructions=custom_instructions,
     )
+    from ..prompt_tone import rewrite_text  # fork: prompt-tone
+
+    prompt = rewrite_text(prompt)  # fork: prompt-tone
 
     # Add causal relationships section if enabled
     # Verbatim mode never uses causal relations (no fact text to relate causally)

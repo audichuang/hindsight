@@ -10,6 +10,7 @@ The reflect agent uses a hierarchical retrieval strategy:
 
 import copy
 
+from ..prompt_tone import soften_done_tool  # fork: prompt-tone
 from .prompts import NO_IDS_IN_TEXT_RULE
 
 # Tool definitions in OpenAI format
@@ -343,6 +344,7 @@ def _done_tool_for_output_language(base: dict, language: str) -> dict:
     return tool
 
 
+@soften_done_tool  # fork: prompt-tone
 def _build_done_tool_with_directives(directive_rules: list[str]) -> dict:
     """
     Build the done tool schema with directive compliance field.

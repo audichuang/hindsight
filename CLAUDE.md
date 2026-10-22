@@ -266,9 +266,7 @@ Run both locally with:
 ./scripts/hooks/check-unused.sh
 ```
 
-**After completing any implementation work, run `/code-review`** to verify your changes against project standards (missing tests, dead code, type safety, etc.). Fix any "must fix" issues before considering the task done.
-
-**MANDATORY: Run `/code-review` before pushing code or creating a pull request.** Do not push or create a PR until all "must fix" issues are resolved.
+**Run `/code-review` after completing implementation work and before pushing or opening a PR.** It checks your changes against project standards (missing tests, dead code, type safety, etc.); resolve every "must fix" issue before you call the task done, push, or open a PR.
 
 ### Testing
 

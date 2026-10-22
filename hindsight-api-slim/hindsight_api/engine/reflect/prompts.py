@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from ..prompt_tone import soften_prompt  # fork: prompt-tone
 from ..prompt_utils import default_language_section, escape_for_prompt, output_language_directive
 from ..response_models import DispositionTraits
 from ..search.think_utils import build_disposition_description
@@ -57,6 +58,7 @@ def _extract_directive_rules(directives: list[dict[str, Any]]) -> list[str]:
     return rules
 
 
+@soften_prompt  # fork: prompt-tone
 def build_directives_section(directives: list[dict[str, Any]]) -> str:
     """Build the directives section for the system prompt.
 
@@ -200,6 +202,7 @@ def bank_disposition_line(bank_profile: dict[str, Any]) -> str:
     return f"Disposition: {', '.join(traits)}\n{described}"
 
 
+@soften_prompt  # fork: prompt-tone
 def build_system_prompt_for_tools(
     bank_profile: dict[str, Any],
     context: str | None = None,
@@ -1150,6 +1153,7 @@ _FINAL_LANGUAGE_RULE = (
 )
 
 
+@soften_prompt  # fork: prompt-tone
 def build_final_system_prompt(
     mission: str | None = None,
     llm_output_language: str | None = None,
