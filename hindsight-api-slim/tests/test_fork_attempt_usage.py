@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import aiohttp
 import pytest
 from pydantic import BaseModel
 
@@ -23,7 +24,7 @@ from hindsight_api.engine.llm_trace import LLMRequestRecord, LLMTraceRecorder
 from hindsight_api.engine.llm_wrapper import LLMProvider
 from hindsight_api.engine.providers import codex_llm
 from hindsight_api.engine.providers.codex_llm import CodexLLM, CodexRunawayStreamError
-from tests.codex_stream_stub import CodexReply, stub_codex_stream_with
+from tests.codex_stream_stub import CodexReply, stub_codex_stream, stub_codex_stream_with
 
 pytestmark = pytest.mark.asyncio
 
@@ -317,22 +318,157 @@ async def test_an_error_row_keeps_the_usage_of_its_failure_event(cost_on, record
 
 
 def test_failure_usage_is_not_stashed_with_the_feature_off():
-    from hindsight_api.engine.llm_attempt_usage import stash_codex_failure_usage
+    from hindsight_api.engine.llm_attempt_usage import stash_codex_event_usage
     from hindsight_api.engine.llm_trace import current_response_usage
 
     event = {"type": "response.failed", "response": {"status": "failed", "usage": _usage(50000, 700)}}
-    stash_codex_failure_usage("response.failed", event)
+    assert stash_codex_event_usage("response.failed", event) is None
     assert current_response_usage() is None
 
 
-def test_codex_parsers_keep_the_failure_usage_hook():
+def test_codex_parsers_keep_the_event_usage_hook():
     for parser in (CodexLLM._parse_sse_stream, CodexLLM._parse_sse_tool_stream):
         body = inspect.getsource(parser)
         assert (
-            "from hindsight_api.engine.llm_attempt_usage import stash_codex_failure_usage  # fork: attempt-usage"
-            in body
+            "from hindsight_api.engine.llm_attempt_usage import stash_codex_event_usage  # fork: attempt-usage" in body
         )
         assert (
-            "stash_codex_failure_usage(event_type, data)  # fork: attempt-usage\n"
-            "                    _raise_on_sse_failure(event_type, data)" in body
+            "usage = stash_codex_event_usage(event_type, data) or usage  # fork: attempt-usage\n"
+            "                    _raise_on_sse_failure(event_type, data)\n"
+            "                    usage = _usage_from_completed_event(event_type, data) or usage" in body
         )
+
+
+# --- usage that arrives before the stream fails to end, and a truncated reply's usage ----------------
+
+_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "recall",
+            "description": "Recall memories",
+            "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
+        },
+    }
+]
+
+
+def _codex() -> CodexLLM:
+    with (
+        patch.object(CodexLLM, "_load_codex_auth", return_value=("token", "account")),
+        patch.object(CodexLLM, "_load_codex_refresh_token", return_value=None),
+    ):
+        return CodexLLM(
+            provider="openai-codex", api_key="ignored", base_url="https://chatgpt.com/backend-api", model="gpt-x"
+        )
+
+
+def _drop_after_completed(impl: CodexLLM):
+    """The real line reader (so the attempt meter runs), with the connection dropped right after ``response.completed``."""
+    original = impl._iter_sse_lines
+
+    async def dropping(response):
+        async for line in original(response):
+            yield line
+            if line.startswith("data: ") and "response.completed" in line:
+                raise aiohttp.ClientPayloadError("connection dropped before the body ended")
+
+    return dropping
+
+
+@pytest.mark.parametrize("path", ["call", "call_with_tools"])
+async def test_completed_usage_survives_a_connection_dropped_after_it(path, cost_on):
+    """``response.completed`` is charged even when the body then fails to finish; the stash keeps it."""
+    llm = _codex()
+    with (
+        stub_codex_stream(llm, CodexReply(text=_completed("answer", _usage(50000, 700, cached=40000, reasoning=30)))),
+        patch.object(llm, "_iter_sse_lines", _drop_after_completed(llm)),
+        pytest.raises(aiohttp.ClientPayloadError),
+    ):
+        if path == "call":
+            await llm.call(messages=_MESSAGES, response_format=_Facts, max_retries=0)
+        else:
+            await llm.call_with_tools(messages=_MESSAGES, tools=_TOOLS, max_retries=0)
+
+    usage = llm_trace.current_response_usage()
+    assert usage is not None
+    assert (usage.input_tokens, usage.output_tokens, usage.cached_tokens, usage.thoughts_tokens) == (
+        50000,
+        700,
+        40000,
+        30,
+    )
+
+
+async def test_an_error_row_keeps_the_usage_of_a_completed_event_before_the_drop(cost_on, recorder):
+    llm = _wrapper([_completed("answer", _usage(50000, 700, cached=40000))])
+    with patch.object(llm._provider_impl, "_iter_sse_lines", _drop_after_completed(llm._provider_impl)):
+        with pytest.raises(aiohttp.ClientPayloadError):
+            await _call(llm, max_retries=0)
+    [row] = recorder.records
+    assert row.status == "error"
+    assert (row.input_tokens, row.output_tokens, row.cached_tokens) == (50000, 700, 40000)
+    assert _usage_marker(row).get("usage_source") != "estimate"
+
+
+async def test_a_dropped_attempt_counts_its_completed_usage_on_the_retry_row(cost_on, recorder):
+    llm = _wrapper([_completed("answer", _usage(50000, 700, cached=40000)), _completed("answer", _usage(1000, 50))])
+    original = llm._provider_impl._iter_sse_lines
+    dropping = _drop_after_completed(llm._provider_impl)
+    attempts = []
+
+    def first_drops(response):
+        attempts.append(response)
+        return dropping(response) if len(attempts) == 1 else original(response)
+
+    with patch.object(llm._provider_impl, "_iter_sse_lines", first_drops):
+        await _call(llm, max_retries=1)
+    [row] = recorder.records
+    assert row.status == "success"
+    assert (row.input_tokens, row.output_tokens, row.cached_tokens) == (51000, 750, 40000)
+    assert _usage_marker(row)["usage_source"] == "provider"
+
+
+def _incomplete(text: str, usage: dict) -> str:
+    return _sse(
+        ("response.text.delta", {"delta": text}),
+        ("response.incomplete", {"type": "response.incomplete", "response": {"status": "incomplete", "usage": usage}}),
+    )
+
+
+async def test_a_truncated_reply_reports_the_usage_of_its_incomplete_event(cost_on):
+    """An incomplete response is charged; its usage, not the chars/4 estimate, is the call's usage."""
+    llm = _codex()
+    with stub_codex_stream(llm, CodexReply(text=_incomplete('{"facts": ["a"]}', _usage(50000, 700, 40000, 30)))):
+        result = await llm.call(messages=_MESSAGES, response_format=_Facts)
+    assert (
+        result.usage.input_tokens,
+        result.usage.output_tokens,
+        result.usage.cached_tokens,
+        result.usage.thoughts_tokens,
+    ) == (50000, 700, 40000, 30)
+
+
+async def test_a_truncated_reply_row_carries_provider_usage(cost_on, recorder):
+    llm = _wrapper([_incomplete("answer", _usage(50000, 700, cached=40000, writes=100))])
+    await _call(llm, max_retries=0)
+    [row] = recorder.records
+    assert (row.input_tokens, row.output_tokens, row.cached_tokens) == (50000, 700, 40000)
+    assert _usage_marker(row)["usage_source"] == "provider"
+    assert _usage_marker(row)["cache_write_tokens"] == 100
+
+
+async def test_a_truncated_reply_keeps_the_char_estimate_with_the_feature_off():
+    llm = _codex()
+    with stub_codex_stream(llm, CodexReply(text=_incomplete('{"facts": ["a"]}', _usage(50000, 700)))):
+        result = await llm.call(messages=_MESSAGES, response_format=_Facts)
+    assert result.usage.input_tokens == _INPUT_ESTIMATE
+
+
+def test_an_event_named_only_in_its_data_is_stashed(cost_on):
+    from hindsight_api.engine.llm_attempt_usage import stash_codex_event_usage
+
+    stash_codex_event_usage(None, {"type": "response.completed", "response": {"usage": _usage(50000, 700)}})
+    usage = llm_trace.current_response_usage()
+    assert usage is not None
+    assert (usage.input_tokens, usage.output_tokens) == (50000, 700)

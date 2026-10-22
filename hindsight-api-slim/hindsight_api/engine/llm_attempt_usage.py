@@ -34,9 +34,12 @@ import logging
 from collections.abc import Callable
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from .sse_delta_scan import DeltaEventScanner
+
+if TYPE_CHECKING:
+    from .response_models import TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -156,30 +159,38 @@ def note_stashed_usage(usage: _Usage | None) -> None:
         logger.debug("attempt-usage stash not noted: %s", type(exc).__name__)
 
 
-# --- usage of a failed response (hooked into the Codex SSE parsers and Claude Code's error result) --
+# --- usage of a terminal Codex event and of Claude Code's error result (hooked into the parsers) ----
 
 
-def stash_codex_failure_usage(event_type: str | None, data: Any) -> None:
-    """Stash the usage a Codex ``response.failed`` event carries, before the parser raises on it.
+_CODEX_USAGE_EVENTS = frozenset({"response.completed", "response.incomplete", "response.failed"})
 
-    The backend can charge a failed response; upstream reads usage from ``response.completed``
-    only (#5693), so without this the failed attempt counts nothing (or a delta estimate). Noted
-    for the cost hook like a completed event, so its cache writes are read too. A no-op with the
-    feature off.
+
+def stash_codex_event_usage(event_type: str | None, data: Any) -> TokenUsage | None:
+    """Stash the usage a terminal Codex event carries the moment it is parsed; return it for the parser.
+
+    The backend charges ``response.completed``, ``response.incomplete`` and ``response.failed``.
+    Upstream reads usage from ``response.completed`` only (#5693), and stashes it only after the
+    stream has ended, so a connection dropped after the event (or the deadline firing) loses it, a
+    failed response raises before any stash, and a truncated (incomplete) reply is recorded at chars/4.
+    Stashed here, each attempt keeps what it was charged; a later stash in the same attempt (upstream's,
+    after the parser returns) replaces this one, so nothing is counted twice. The usage is returned so
+    the parser keeps an incomplete reply's real counts in place of the chars/4 fallback (a completed
+    event's usage is re-read by upstream right after). Noted for the cost hook like a completed event,
+    so its cache writes are read too. A no-op returning None with the feature off.
     """
-    if event_type != "response.failed" or not isinstance(data, dict):
-        return
+    if not isinstance(data, dict) or (event_type or data.get("type")) not in _CODEX_USAGE_EVENTS:
+        return None
     try:
         if not _cost_enabled():
-            return
+            return None
         from .llm_cost import alias_codex_usage_note
         from .llm_trace import LLMResponseUsage, stash_response_usage
         from .providers.codex_llm import _usage_from_completed_event
 
-        # The usage block has the completed event's shape; only the event name differs.
+        # The usage block has the completed event's shape for all three; only the event name differs.
         usage = _usage_from_completed_event("response.completed", data)
         if usage is None:
-            return
+            return None
         stash_response_usage(
             alias_codex_usage_note(
                 usage,
@@ -191,8 +202,10 @@ def stash_codex_failure_usage(event_type: str | None, data: Any) -> None:
                 ),
             )
         )
+        return usage
     except Exception as exc:
-        logger.debug("attempt-usage Codex failure usage not stashed: %s", type(exc).__name__)
+        logger.debug("attempt-usage Codex event usage not stashed: %s", type(exc).__name__)
+        return None
 
 
 def stash_claude_code_error_usage(message: object) -> None:
