@@ -178,10 +178,15 @@ def stash_codex_event_usage(event_type: str | None, data: Any) -> TokenUsage | N
     event's usage is re-read by upstream right after). Noted for the cost hook like a completed event,
     so its cache writes are read too. A no-op returning None with the feature off.
     """
-    if not isinstance(data, dict) or (event_type or data.get("type")) not in _CODEX_USAGE_EVENTS:
+    if not isinstance(data, dict):
         return None
     try:
         if not _cost_enabled():
+            return None
+        # Either name counts, as in upstream's completed check: the parsers keep the last `event:` line
+        # across events, so a data-only event can arrive under a stale name. Anything but a string is ignored.
+        names = {name for name in (event_type, data.get("type")) if isinstance(name, str)}
+        if not names & _CODEX_USAGE_EVENTS:
             return None
         from .llm_cost import alias_codex_usage_note
         from .llm_trace import LLMResponseUsage, stash_response_usage

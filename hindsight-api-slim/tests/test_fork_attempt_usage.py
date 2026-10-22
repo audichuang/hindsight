@@ -6,6 +6,7 @@ parse failure dropped the earlier attempts' tokens, and a chars/4 estimate on an
 was not marked as one. Each test below fails with the hooks removed.
 """
 
+import contextvars
 import inspect
 import json
 import os
@@ -465,10 +466,35 @@ async def test_a_truncated_reply_keeps_the_char_estimate_with_the_feature_off():
     assert result.usage.input_tokens == _INPUT_ESTIMATE
 
 
-def test_an_event_named_only_in_its_data_is_stashed(cost_on):
+def _stash_in_a_fresh_context(event_type: str | None, data: dict) -> tuple[object, object]:
+    """Run the hook in its own context, so its stash cannot leak into later tests on this worker."""
     from hindsight_api.engine.llm_attempt_usage import stash_codex_event_usage
 
-    stash_codex_event_usage(None, {"type": "response.completed", "response": {"usage": _usage(50000, 700)}})
-    usage = llm_trace.current_response_usage()
-    assert usage is not None
-    assert (usage.input_tokens, usage.output_tokens) == (50000, 700)
+    def run() -> tuple[object, object]:
+        return stash_codex_event_usage(event_type, data), llm_trace.current_response_usage()
+
+    return contextvars.copy_context().run(run)
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    [None, "response.output_text.delta"],
+    ids=["no-event-line", "stale-event-line"],
+)
+def test_an_event_named_only_in_its_data_is_stashed(cost_on, event_type):
+    """The parsers keep the last `event:` name across events, so data.type alone must also count."""
+    data = {"type": "response.completed", "response": {"usage": _usage(50000, 700)}}
+    _, stashed = _stash_in_a_fresh_context(event_type, data)
+    assert stashed is not None
+    assert (stashed.input_tokens, stashed.output_tokens) == (50000, 700)
+
+
+@pytest.mark.parametrize("flag", ["on", "off"])
+@pytest.mark.parametrize("bad_type", [[], {}, 7], ids=["list", "dict", "int"])
+def test_a_malformed_event_type_never_raises(monkeypatch, flag, bad_type):
+    """Odd metadata in a data-only event must not abort a stream, with the feature on or off."""
+    monkeypatch.setenv("HINDSIGHT_API_LLM_COST_ENABLED", "true" if flag == "on" else "false")
+    clear_config_cache()
+    load_cost_settings.cache_clear()
+    returned, stashed = _stash_in_a_fresh_context(None, {"type": bad_type, "response": {"usage": _usage(1, 1)}})
+    assert returned is None and stashed is None
