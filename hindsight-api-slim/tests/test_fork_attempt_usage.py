@@ -156,8 +156,9 @@ async def test_runaway_on_every_attempt_records_an_estimate(cost_on, recorder):
     assert row.status == "error"
     assert row.input_tokens == 2 * _INPUT_ESTIMATE
     assert row.output_tokens is not None
-    # Each attempt trips on its own chunk boundary, so the two counts may differ.
-    assert 2 * _DELTAS_PER_RUNAWAY.start <= row.output_tokens <= 2 * (_DELTAS_PER_RUNAWAY.stop - 1)
+    # Each attempt trips on its own chunk boundary, so the two counts may differ; more than one attempt's
+    # maximum proves both were counted.
+    assert _DELTAS_PER_RUNAWAY.stop - 1 < row.output_tokens <= 2 * (_DELTAS_PER_RUNAWAY.stop - 1)
     assert _usage_marker(row)["usage_source"] == "estimate"
 
 

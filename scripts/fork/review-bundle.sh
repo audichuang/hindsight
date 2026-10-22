@@ -15,7 +15,8 @@ git range-diff --no-color "$old..$oldhead" "$new..$head" > "$out/range-diff.full
 
 # Pair old and new commits with range-diff, then judge each pair by patch-id: `cherry-pick -x` changes every
 # message, and range-diff can file a removed hunk under "@@ Metadata", so its own hunk headings cannot tell.
-pid() { git show --format= "$1" | git patch-id --stable | cut -d' ' -f1; }
+# --verbatim: whitespace counts (a dedent in Python changes behaviour); --binary: binary changes count too.
+pid() { git show --binary --format= "$1" | git patch-id --verbatim | cut -d' ' -f1; }
 paths() { git show --name-only --format= "$1"; }
 : > "$out/range-diff.txt"; : > "$out/extra-commits.diff"; : > "$out/paths"
 n_changed=0 n_extra=0
@@ -46,8 +47,8 @@ fi
 test_names() {
   perl -0777 -ne '
     print "$1\n" while /^[ \t]*(?:async[ \t]+)?def[ \t]+(test_\w+)/mg;
-    print "$2\n" while /\b(?:it|test)(?:\.(?:only|skip|todo|concurrent|fails))*\s*\(\s*([\x27"`])((?:(?!\1).)*)\1/sg;
-    print "each: $3\n" while /\b(?:it|test)(?:\.\w+)*\.each\s*(\((?:[^()]++|(?1))*\)|`[^`]*`)\s*\(\s*([\x27"`])((?:(?!\2).)*)\2/sg;
+    print "$2\n" while /\b(?:it|test)(?:\.(?:only|skip|todo|concurrent|fails))*\s*\(\s*([\x27"`])((?:\\.|(?!\1).)*)\1/sg;
+    print "each: $3\n" while /\b(?:it|test)(?:\.\w+)*\.each\s*(\((?:[^()]++|(?1))*\)|`[^`]*`)\s*\(\s*([\x27"`])((?:\\.|(?!\2).)*)\2/sg;
   ' | sort -u
 }
 
