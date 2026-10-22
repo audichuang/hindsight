@@ -67,10 +67,15 @@ def _sdk_cache_writes(usage: dict[str, Any], reported: int | None) -> int:  # fo
 
 
 def _stash_error_result_usage(message: Any) -> None:  # fork: claude-code-error-usage
-    """Keep the real counts of an ``is_error`` result (e.g. a quota error) for the error trace."""
-    if not message.usage:
+    """Keep the real counts of an ``is_error`` result (e.g. a quota error) for the error trace.
+
+    Read with getattr: upstream's error path never touches ``usage``, so neither may this hook fail on
+    a result object without one.
+    """
+    raw = getattr(message, "usage", None)
+    if not isinstance(raw, dict) or not raw:
         return
-    usage = _sdk_token_usage(message.usage, [], "")
+    usage = _sdk_token_usage(raw, [], "")
     stash_response_usage(
         LLMResponseUsage(
             input_tokens=usage.input_tokens,
