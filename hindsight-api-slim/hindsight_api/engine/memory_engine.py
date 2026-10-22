@@ -14150,6 +14150,10 @@ class MemoryEngine(MemoryEngineInterface):
         stored_date = content_dict.get("event_date")
         if isinstance(stored_date, str) and is_placeholder_date(datetime.fromisoformat(stored_date)):
             content_dict["event_date"] = None
+        # fork: reprocess-event-date -- no stored date means the original retain dated it at write
+        # time, which is created_at (a replace keeps it); a missing key would date it NOW instead.
+        if "event_date" not in content_dict and doc.get("created_at"):
+            content_dict["event_date"] = doc["created_at"]
         # These are the reprocess's own and must win over anything stored.
         content_dict["content"] = original_text
         content_dict["document_id"] = document_id
