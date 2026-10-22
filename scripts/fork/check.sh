@@ -35,10 +35,12 @@ step "dependencies"
 # CI installs from the lockfile on every run; reinstall whenever it or a manifest changed since the last
 # install here. A node_modules symlinked to another checkout (.gitignore) is never reinstalled through:
 # npm ci would empty the other checkout.
-lock=$(git hash-object package-lock.json package.json hindsight-control-plane/package.json \
-  hindsight-clients/typescript/package.json | tr -d '\n')
+workspaces=$(node -p "require('./package.json').workspaces.join(' ')")
+manifests=(package-lock.json package.json); nm=(node_modules)
+for w in $workspaces; do manifests+=("$w/package.json"); nm+=("$w/node_modules"); done
+lock=$(git hash-object "${manifests[@]}" | tr -d '\n')
 if [ "$(cat node_modules/.fork-check-lock 2>/dev/null || true)" != "$lock" ]; then
-  for d in node_modules hindsight-control-plane/node_modules hindsight-clients/typescript/node_modules; do
+  for d in "${nm[@]}"; do
     [ ! -L "$d" ] || fail "$d is a symlink and the npm lockfile or manifests changed; give this checkout its own node_modules"
   done
   npm ci --no-audit --no-fund --loglevel=error
