@@ -162,7 +162,7 @@ jobs:
         git diff --exit-code -- ../hindsight-docs/static/openapi.json
 
     - name: Fork rebase tooling
-      run: bash scripts/fork/rebase-onto.test.sh && bash scripts/fork/review-bundle.test.sh
+      run: bash scripts/fork/rebase-onto.test.sh && bash scripts/fork/review-bundle.test.sh && bash scripts/fork/hook-tests.test.sh
 
     - name: Generated docs skill and bank-template schema are up to date
       run: |
