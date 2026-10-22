@@ -51,6 +51,9 @@ def load_dotenv_for_entrypoint() -> None:
     """
     load_dotenv(find_dotenv(usecwd=True), override=True)
     clear_config_cache()
+    from .engine.prompt_tone import validate_prompt_tone_env  # fork: prompt-tone
+
+    validate_prompt_tone_env()  # fork: prompt-tone (a bad HINDSIGHT_API_PROMPT_TONE fails the entry point)
 
 
 class ConfigFieldAccessError(AttributeError):

@@ -8,10 +8,13 @@ This patch rewrites those specific sentences at normal volume, keeping every rea
 drops the ``directive_compliance`` field of the directive-aware ``done`` tool, which nothing
 reads.
 
-The rewrites are exact-string replacements applied to what the upstream builders return, so
-upstream's text stays the source and each replacement either matches it word for word or
-does nothing. ``tests/test_fork_prompt_tone.py`` builds the real prompts and fails when a
-replacement stops matching, which is how a rewording upstream is noticed after a rebase.
+The rewrites are exact-string replacements, so upstream's text stays the source and each
+replacement either matches it word for word or does nothing. Text the caller supplied (a
+directive, a bank mission, extra context) is never rewritten: on the reflect side any caller
+string that contains a rewrite key is masked while the rewrites run, and on the retain side
+the template is rewritten before the custom instructions are filled in.
+``tests/test_fork_prompt_tone.py`` builds each real prompt and fails when a replacement stops
+matching it, which is how a rewording upstream is noticed after a rebase.
 
 Inert by default: with ``HINDSIGHT_API_PROMPT_TONE`` unset, every hook returns upstream's own
 object unchanged.
@@ -21,6 +24,7 @@ from __future__ import annotations
 
 import copy
 import functools
+import inspect
 from collections.abc import Callable
 from typing import Any, TypeVar
 
@@ -72,7 +76,7 @@ REWRITES: tuple[tuple[str, str], ...] = (
         'questions, offer to search again, suggest alternatives, or close with lines like "Would you like me '
         'to..." or "Let me know if...".',
     ),
-    # retain: fact-extraction headings and warnings (concise and verbose modes)
+    # retain: fact-extraction headings and warnings (SELECTIVITY is in concise mode, the rest in verbose)
     ("SELECTIVITY - CRITICAL (Reduces 90% of unnecessary output)\n", "SELECTIVITY\n"),
     ("COREFERENCE RESOLUTION (CRITICAL)\n", "COREFERENCE RESOLUTION\n"),
     ("FACT_KIND CLASSIFICATION (CRITICAL FOR TEMPORAL HANDLING)\n", "FACT_KIND CLASSIFICATION\n"),
@@ -123,52 +127,101 @@ def parse_enabled(raw: str | None) -> bool:
     raise ValueError(f"{ENV_PROMPT_TONE} must be true/false/1/0 (got {raw!r})")
 
 
-@functools.cache
 def prompt_tone_enabled() -> bool:
-    """Read once per process. Tests call ``prompt_tone_enabled.cache_clear()``."""
+    """Read on every call (a dict lookup), so a ``.env`` loaded after import still counts."""
     return parse_enabled(prompt_tone_env())
 
 
-def rewrite_text(text: str, rewrites: tuple[tuple[str, str], ...] = REWRITES) -> str:
-    """Apply each rewrite that matches. With the switch off, ``text`` itself is returned."""
-    if not prompt_tone_enabled():
-        return text
+def validate_prompt_tone_env() -> None:
+    """Called by ``load_dotenv_for_entrypoint`` once the ``.env`` is applied: a typo fails startup."""
+    prompt_tone_enabled()
+
+
+def _caller_strings(value: Any) -> list[str]:
+    """Every string inside a builder's arguments (nested dicts, lists and tuples included)."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for item in value.values() for s in _caller_strings(item)]
+    if isinstance(value, list | tuple):
+        return [s for item in value for s in _caller_strings(item)]
+    return []
+
+
+def _rewrite_outside(text: str, protected: list[str], rewrites: tuple[tuple[str, str], ...]) -> str:
+    """Apply ``rewrites`` to ``text`` except inside the caller strings that contain a rewrite key."""
+    # Keys are matched without their surrounding newlines: a key that ends in "\n" must not
+    # reach into caller text whose own end is followed by a newline in the prompt.
+    keys = [old.strip("\n") for old, _ in rewrites]
+    masks = sorted({s for s in protected if any(key and key in s for key in keys)}, key=len, reverse=True)
+    for i, caller_text in enumerate(masks):
+        text = text.replace(caller_text, f"\x00{i}\x00")
     for old, new in rewrites:
         text = text.replace(old, new)
+    for i, caller_text in enumerate(masks):
+        text = text.replace(f"\x00{i}\x00", caller_text)
     return text
 
 
-def soften_prompt(func: _F) -> _F:
-    """Decorate a prompt builder that returns a ``str``; its result goes through ``rewrite_text``."""
+def rewrite_text(text: str, rewrites: tuple[tuple[str, str], ...] = REWRITES) -> str:
+    """Apply each rewrite that matches. With the switch off, ``text`` itself is returned.
 
-    @functools.wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        return rewrite_text(func(*args, **kwargs))
-
-    return wrapper  # type: ignore[return-value]
-
-
-def soften_done_tool(func: _F) -> _F:
-    """Decorate the directive-aware ``done`` tool builder.
-
-    With the switch on, the unread ``directive_compliance`` field goes away and the description
-    and answer field are rewritten. The directives themselves stay listed on the answer field.
+    For upstream-owned text only (a template before caller values are filled in).
     """
+    if not prompt_tone_enabled():
+        return text
+    return _rewrite_outside(text, [], rewrites)
+
+
+def soften_prompt(func: _F) -> _F:
+    """Decorate a prompt builder that returns a ``str``; caller-supplied strings are left alone."""
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        tool = func(*args, **kwargs)
+        text = func(*args, **kwargs)
         if not prompt_tone_enabled():
-            return tool
-        tool = copy.deepcopy(tool)
-        function = tool["function"]
-        function["description"] = rewrite_text(function["description"], DONE_TOOL_REWRITES)
-        params = function["parameters"]
-        answer = params["properties"].get("answer")
-        if answer is not None:
-            answer["description"] = rewrite_text(answer["description"], DONE_TOOL_REWRITES)
-        params["properties"].pop(_COMPLIANCE_FIELD, None)
-        params["required"] = [name for name in params.get("required", []) if name != _COMPLIANCE_FIELD]
-        return tool
+            return text
+        return _rewrite_outside(text, _caller_strings([args, kwargs]), REWRITES)
 
     return wrapper  # type: ignore[return-value]
+
+
+def soften_reflect_tools(func: _F) -> _F:
+    """Decorate ``get_reflect_tools``; with the switch on, rework its directive-aware ``done`` tool.
+
+    The unread ``directive_compliance`` field goes away and the description and answer field
+    are rewritten. The directives stay listed on the field the model fills in: the answer
+    field, or, in document mode (which has no answer field), the document field.
+    """
+    signature = inspect.signature(func)
+
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        tools = func(*args, **kwargs)
+        if not prompt_tone_enabled():
+            return tools
+        rules = signature.bind(*args, **kwargs).arguments.get("directive_rules") or []
+        if not rules:
+            return tools
+        return [_soften_done(tool, rules) if tool["function"]["name"] == "done" else tool for tool in tools]
+
+    return wrapper  # type: ignore[return-value]
+
+
+def _soften_done(tool: dict[str, Any], rules: list[str]) -> dict[str, Any]:
+    tool = copy.deepcopy(tool)
+    function = tool["function"]
+    params = function["parameters"]
+    properties = params["properties"]
+    if _COMPLIANCE_FIELD not in properties:
+        return tool
+    function["description"] = _rewrite_outside(function["description"], rules, DONE_TOOL_REWRITES)
+    answer = properties.get("answer")
+    if answer is not None:
+        answer["description"] = _rewrite_outside(answer["description"], rules, DONE_TOOL_REWRITES)
+    elif "document" in properties:
+        rules_list = "\n".join(f"  {i + 1}. {rule}" for i, rule in enumerate(rules))
+        properties["document"]["description"] += f" The document must comply with these directives:\n{rules_list}"
+    properties.pop(_COMPLIANCE_FIELD)
+    params["required"] = [name for name in params.get("required", []) if name != _COMPLIANCE_FIELD]
+    return tool
