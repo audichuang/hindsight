@@ -26,7 +26,13 @@ def _reflect_engine_with_agent(monkeypatch, agent_result) -> MemoryEngine:
     engine._reflect_llm_config = SimpleNamespace(provider="openai")
     engine._operation_validator = None
     engine._config_resolver = SimpleNamespace(
-        resolve_full_config=AsyncMock(return_value=SimpleNamespace(llm_output_language=None)),
+        resolve_full_config=AsyncMock(
+            return_value=SimpleNamespace(
+                llm_output_language=None,
+                reflect_use_decision_model=False,
+                mental_model_refresh_use_decision_model=False,
+            )
+        ),
         get_bank_config=AsyncMock(return_value={}),
     )
     engine._authenticate_tenant = AsyncMock()
