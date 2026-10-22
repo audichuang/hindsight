@@ -499,7 +499,7 @@ class RoutedMultiCrossEncoder(MultiCrossEncoder):
         members: list[CrossEncoderModel],
         settings: RoutingSettings,
         *,
-        clock: Callable[[], float] = time.time,
+        clock: Callable[[], float] = time.time,  # noqa: TID251 - wall clock: Retry-After dates set cooldowns
         monotonic: Callable[[], float] = time.monotonic,
         queue_poll_initial: float = QUEUE_POLL_INITIAL_SECONDS,
         queue_poll_max: float = QUEUE_POLL_MAX_SECONDS,
