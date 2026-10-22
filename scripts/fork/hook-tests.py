@@ -78,6 +78,9 @@ def main() -> None:
             imports[mod] = names_in(ast.parse(path.read_text(encoding="utf-8")), package)
         except SyntaxError as exc:
             sys.exit(f"{path}: {exc}")
+        # Importing a module runs its parent packages' __init__.py first: those count as its imports.
+        parts = package.split(".")
+        imports[mod].update(".".join(parts[:i]) for i in range(1, len(parts) + 1) if ".".join(parts[:i]) != mod)
         files[mod] = path
 
     def hits(names: set[str], targets: set[str]) -> bool:
