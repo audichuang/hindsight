@@ -29,6 +29,7 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 from ..config import ENV_PROMPT_TONE, prompt_tone_env
+from .prompt_utils import escape_for_prompt
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
@@ -138,9 +139,15 @@ def validate_prompt_tone_env() -> None:
 
 
 def _caller_strings(value: Any) -> list[str]:
-    """Every string inside a builder's arguments (nested dicts, lists and tuples included)."""
+    """Every string inside a builder's arguments (nested dicts, lists and tuples included).
+
+    Each string also yields the forms a builder renders it in: stripped of surrounding
+    whitespace (both reflect builders strip the mission), and that passed through
+    ``escape_for_prompt`` (the final-synthesis builder inserts the mission with its braces doubled).
+    """
     if isinstance(value, str):
-        return [value]
+        stripped = value.strip()
+        return list(dict.fromkeys((value, stripped, escape_for_prompt(stripped))))
     if isinstance(value, dict):
         return [s for item in value.values() for s in _caller_strings(item)]
     if isinstance(value, list | tuple):

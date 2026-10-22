@@ -177,6 +177,28 @@ def test_on_leaves_caller_text_alone(tone, old):
     assert quoted in done
 
 
+@pytest.mark.parametrize(
+    "mission",
+    [
+        "  Quote literally: {sentence}  ",
+        'Answer as JSON {{"note": "{sentence}"}}',
+        'Answer as JSON {{{{"note": "{sentence}"}}}}',
+    ],
+)
+def test_on_leaves_a_rendered_mission_alone(tone, mission):
+    """The builders strip the mission and escape its braces; the quoted sentence still survives."""
+    tone("true")
+    sentence = REWRITES[4][0]  # the grounding rule, present in both reflect prompts
+    mission = mission.format(sentence=sentence)
+    agent = build_system_prompt_for_tools(
+        bank_profile={"name": "TestBank", "mission": mission}, has_mental_models=False, include_observations=False
+    )
+    final = build_final_system_prompt(mission=mission)
+    for prompt in (agent, final):
+        assert prompt.count(sentence) >= 1  # the mission's copy; upstream's own copy is rewritten
+        assert REWRITES[4][1] in prompt
+
+
 def test_on_keeps_the_directives_themselves(tone):
     tone("true")
     for prompt in (
