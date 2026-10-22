@@ -3,13 +3,14 @@
 # Flow: feature/* --PR--> develop (this workflow) --> patched (tag --> image).
 # Upstream's test.yml only runs on PRs to main and leans on secrets this fork
 # does not have, so this file runs the subset that needs no provider
-# credentials: the api-slim suite without real-LLM markers, ty, lint (no diff
-# allowed), the OpenAPI spec, and the control plane. See FORK.md "Branches".
+# credentials: the api-slim suite without real-LLM markers, the system tests, ty,
+# lint (no diff allowed), the OpenAPI spec, and the control plane. See FORK.md "Branches".
 name: Fork CI
 
 on:
   pull_request:
-    branches: [develop, patched]
+    # ci-base/<tag> is the upstream tag a rebase PR targets, so its diff is only the fork commits.
+    branches: [develop, patched, 'ci-base/**']
   push:
     branches: [develop]
   workflow_dispatch:
@@ -85,6 +86,38 @@ jobs:
         --deselect "tests/test_llm_timeout_propagation.py::test_every_network_provider_receives_the_resolved_timeout[github-copilot-extra3]"
         --splits 3 --group ${{ matrix.shard }}
 
+  system-tests:
+    # Upstream's test-system job: a real hindsight-api driven through the Python client against a
+    # stub LLM, embeddings and rerank server, so it needs no provider credentials.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    name: system-tests (blackbox)
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true
+        prune-cache: false
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version-file: ".python-version"
+
+    - name: Install API dependencies
+      working-directory: ./hindsight-api-slim
+      run: uv sync --frozen --extra embedded-db --index-strategy unsafe-best-match
+
+    - name: Install system-test dependencies
+      working-directory: ./hindsight-system-tests
+      run: uv sync --frozen
+
+    - name: Run system tests
+      working-directory: ./hindsight-system-tests
+      run: uv run pytest tests -v
+
   typecheck-and-lint:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -128,6 +161,16 @@ jobs:
       run: |
         uv run generate-openapi
         git diff --exit-code -- ../hindsight-docs/static/openapi.json
+
+    - name: Fork rebase tooling
+      run: bash scripts/fork/rebase-onto.test.sh && bash scripts/fork/review-bundle.test.sh
+
+    - name: Generated docs skill and bank-template schema are up to date
+      run: |
+        ./scripts/generate-bank-template-schema.sh
+        ./scripts/generate-docs-skill.sh
+        git status --porcelain
+        test -z "$(git status --porcelain)"
 
   control-plane:
     runs-on: ubuntu-latest
