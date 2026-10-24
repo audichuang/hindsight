@@ -91,6 +91,46 @@ describe("startCodebaseSurvey", () => {
     return [spec.bin, spec.args, options, spec] as const;
   }
 
+  // fork: survey-orca-env — the detached survey must not impersonate the parent's Orca pane.
+  describe("terminal-manager env isolation", () => {
+    const saved = { ...process.env };
+    afterEach(() => {
+      for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+      Object.assign(process.env, saved);
+    });
+
+    for (const harness of ["claude-code", "codex", "antigravity-cli", "opencode"] as const) {
+      it(`${harness}: drops every ORCA_* var, keeps the rest`, async () => {
+        process.env.ORCA_PANE_KEY = "pane-1";
+        process.env.ORCA_AGENT_HOOK_PORT = "1234";
+        process.env.ORCA_AGENT_HOOK_TOKEN = "secret";
+        process.env.ORCA_ANYTHING_ELSE = "x";
+        process.env.PATH = "/usr/bin:/bin";
+        process.env.HOME = "/home/someone";
+        process.env.HINDSIGHT_API_URL = "http://example.invalid:1";
+        process.env.ORCASTRATE = "no-underscore-kept";
+        process.env.MY_ORCA_VAR = "not-a-prefix-kept";
+        const spawn = fakeSpawn();
+        await startCodebaseSurvey("/repo", {
+          harness,
+          mcpServerPath: "/x/mcp-server.js",
+          claudeBin: "/bin/claude",
+          spawn,
+          exists: yes,
+          opencodeDefinesAgent: () => true,
+        });
+        const [, , options] = launched(spawn);
+        expect(Object.keys(options.env).filter((k) => k.startsWith("ORCA_"))).toEqual([]);
+        expect(options.env.PATH).toBe("/usr/bin:/bin");
+        expect(options.env.HOME).toBe("/home/someone");
+        expect(options.env.HINDSIGHT_API_URL).toBe("http://example.invalid:1");
+        expect(options.env.HINDSIGHT_DISABLE_HOOKS).toBe("1");
+        expect(options.env.ORCASTRATE).toBe("no-underscore-kept");
+        expect(options.env.MY_ORCA_VAR).toBe("not-a-prefix-kept");
+      });
+    }
+  });
+
   // ── claude recipe (the default / self-contained inline-MCP one) ────────────────────────────────
   it("claude: spawns the resolved binary with the expected argv, sandbox, and options", async () => {
     const spawn = fakeSpawn();
