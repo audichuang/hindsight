@@ -199,6 +199,14 @@ interface SpawnPlan {
   env: NodeJS.ProcessEnv;
 }
 
+/** 〈fork: survey-orca-env〉survey 是脫離的背景工作，不能冒充父 session 所在的 pane：Orca（終端／agent
+ *  管理器）靠 ORCA_* 變數認人，子 `claude -p` 繼承到後，結束時 Orca 自己的 Stop hook 會回報「這個 pane
+ *  的 agent 做完了」，連父終端一起關掉（無人值守排程被腰斬）。HINDSIGHT_DISABLE_HOOKS 只關得掉我們
+ *  的 hook，所以這裡把所有 ORCA_ 開頭的變數丟掉，其餘原樣保留。 */
+function withoutTerminalManagerEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(base).filter(([k]) => !k.startsWith("ORCA_")));
+}
+
 /** Build the headless survey command for one agent. `bin` is already resolved (and confirmed to
  *  exist by the caller). All recipes run read-only and set HINDSIGHT_DISABLE_HOOKS=1. */
 function buildSurveyPlan(
@@ -208,7 +216,7 @@ function buildSurveyPlan(
   opts: { model?: string; budgetUsd?: number; mcpServerPath: string }
 ): SpawnPlan {
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...withoutTerminalManagerEnv(process.env), // fork: survey-orca-env
     // Anti-recursion: the survey's own agent session must not fire our hooks (session-start,
     // UserPromptSubmit/BeforeAgent, Stop/SessionEnd) or re-seed — see the HINDSIGHT_DISABLE_HOOKS
     // guard in hook.ts / retain-hook.ts / session-start.ts / runtime.ts.
