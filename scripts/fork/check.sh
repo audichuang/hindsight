@@ -13,6 +13,17 @@ root=$(git rev-parse --show-toplevel)
 cd "$root"
 
 base=${1:-$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-patch*' HEAD)}
+# config.py's find_dotenv walks up from the cwd, so a .env in this checkout OR any parent directory (a
+# worktree nested inside a configured checkout) leaks a deployment's providers into the tests (FORK.md).
+d=$root
+while :; do
+  if [ -f "$d/.env" ]; then
+    echo "check.sh: $d/.env would leak into the api-slim tests; run from a worktree outside any directory with a .env" >&2
+    exit 2
+  fi
+  [ "$d" = / ] && break
+  d=$(dirname "$d")
+done
 if [ -n "$(git status --porcelain)" ]; then
   echo "check.sh: commit or stash first; lint.sh's diff is the failure signal" >&2
   exit 2
@@ -70,7 +81,22 @@ step "generated files (upstream's verify-generated-files, minus the Rust client)
 [ -z "$(git status --porcelain)" ] || { git status --short; fail "generated files are stale or new; commit the files above"; }
 
 step "fork rebase tooling"
-for t in rebase-onto review-bundle hook-tests; do bash "scripts/fork/$t.test.sh" >/dev/null || fail "scripts/fork/$t.test.sh"; done
+for t in rebase-onto review-bundle hook-tests hooked-integrations; do bash "scripts/fork/$t.test.sh" >/dev/null || fail "scripts/fork/$t.test.sh"; done
+
+step "integrations carrying fork hooks (each package's full suite and typecheck)"
+# Not root workspaces: each has its own lockfile and node_modules, reinstalled the same way as above.
+pkgs=$(bash scripts/fork/hooked-integrations.sh)
+[ -n "$pkgs" ] || echo "none"
+for pkg in $pkgs; do
+  plock=$(git hash-object "$pkg/package-lock.json" "$pkg/package.json" | tr -d '\n')
+  if [ "$(cat "$pkg/node_modules/.fork-check-lock" 2>/dev/null || true)" != "$plock" ]; then
+    [ ! -L "$pkg/node_modules" ] || fail "$pkg/node_modules is a symlink and its lockfile changed; give this checkout its own node_modules"
+    (cd "$pkg" && npm ci --no-audit --no-fund --loglevel=error)
+    echo "$plock" > "$pkg/node_modules/.fork-check-lock"
+  fi
+  run "$pkg typecheck" sh -c "cd '$pkg' && npx tsc --noEmit"
+  run "$pkg tests" sh -c "cd '$pkg' && CI=true npm test"
+done
 
 step "fork tests, and the upstream tests around the fork's hooks"
 # The fork's own test files, plus the upstream ones that exercise a hooked module (hook-tests.py says

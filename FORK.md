@@ -18,6 +18,7 @@ Work lands in three steps: a `feature/<name>` branch off `develop`, a PR into `d
 - **Import the fork module locally inside upstream hooks** when a module-level import would either create an import cycle or expose fork classes to upstream tests that scan a module's `vars()` (e.g. `TestEveryRemoteRerankerRetries` in `tests/test_reranker_retry.py` flags any backend class in `cross_encoder`'s namespace that overrides `predict`).
 - **Inert by default.** With none of the patch's env vars set, behaviour must be byte-for-byte upstream (return upstream's own object, not a subclass that "behaves the same"). Validate the new vars at startup so a typo fails the build instead of being ignored.
 - **Test that the hooks exist.** Add fork tests that fail if a hook disappears after a conflict resolution (e.g. `test_config_keeps_the_routing_env_hook`).
+- **TypeScript integrations follow the same rules.** The hook comment is `// fork: <name>`, the logic goes in a fork-owned `fork-<name>.ts` and the tests in `fork-<name>.test.ts` next to it (e.g. `hindsight-integrations/coding-agents/src/core/fork-survey-env.ts`). `scripts/fork/hooked-integrations.sh` lists every integration package whose non-test sources carry such a hook, and `check.sh` and Fork CI run that package's typecheck and full test suite, which nothing else runs.
 - **No host information on the fork.** It is public: no host names, internal addresses or ops-repo paths in code, tests or docs. Describe a deployment as "the reference deployment".
 
 ## Before tagging
