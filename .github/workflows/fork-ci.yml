@@ -162,7 +162,7 @@ jobs:
         git diff --exit-code -- ../hindsight-docs/static/openapi.json
 
     - name: Fork rebase tooling
-      run: bash scripts/fork/rebase-onto.test.sh && bash scripts/fork/review-bundle.test.sh && bash scripts/fork/hook-tests.test.sh
+      run: bash scripts/fork/rebase-onto.test.sh && bash scripts/fork/review-bundle.test.sh && bash scripts/fork/hook-tests.test.sh && bash scripts/fork/hooked-integrations.test.sh
 
     - name: Generated docs skill and bank-template schema are up to date
       run: |
@@ -170,6 +170,28 @@ jobs:
         ./scripts/generate-docs-skill.sh
         git status --porcelain
         test -z "$(git status --porcelain)"
+
+  # A `// fork:` hook in an integration package is covered only by that package's own suite.
+  hooked-integrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: '24'
+
+    - name: Typecheck and test every integration carrying a fork hook
+      run: |
+        pkgs=$(bash scripts/fork/hooked-integrations.sh)
+        if [ -z "$pkgs" ]; then echo "none"; exit 0; fi
+        for pkg in $pkgs; do
+          echo "::group::$pkg"
+          (cd "$pkg" && npm ci --no-audit --no-fund && npx tsc --noEmit && CI=true npm test)
+          echo "::endgroup::"
+        done
 
   control-plane:
     runs-on: ubuntu-latest
